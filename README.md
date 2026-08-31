@@ -18,7 +18,9 @@ ChatGPT gives you no indication of how full the context window is. You find out 
 - Known model limits are labelled as inferred unless an explicitly matched ChatGPT runtime context-window value is available
 - One debounced same-origin conversation refresh on normal, Project, and Custom GPT conversation routes
 - Ephemeral same-origin session auth for the conversation-detail request; credentials stay in page memory
+- Backend model-slug detection with a read-only UI label fallback
 - Honest partial-DOM mode when full conversation data or its model limit is unavailable
+- Privacy-safe optional structural tool-schema diagnostic (disabled by default)
 
 Everything runs locally in the tab. No data leaves your browser, nothing is stored, and the extension can only access `chatgpt.com`. See the [privacy policy](PRIVACY.md).
 
@@ -75,6 +77,8 @@ for s in 16 48 128; do rsvg-convert -w $s -h $s icons/icon.svg -o icons/icon$s.p
 ## Caveats
 
 - Token counts and context limits are **estimates**; they are not OpenAI backend accounting.
+- "Full mapping" means the complete **active** conversation mapping was available to the extension. It does not mean exact OpenAI runtime token accounting, access to hidden server context, hidden system prompts, or transient tool context.
+- Tool/search usage reflects only countable tool content persisted in the active conversation mapping. Some ChatGPT tool executions may retain structural tool nodes without persisted text and can therefore contribute zero estimated tokens; this is not an extension bug.
 - DOM fallback is partial and may exclude history unloaded by ChatGPT. Unknown models and limits remain visibly unknown.
 - The extension depends on ChatGPT's internal response shape, which OpenAI can change without notice. If the badge stops updating, that is the likely cause.
 - Context limits are inferred from the model slug unless an explicitly matched ChatGPT runtime context-window value is available; they may lag behind new model releases.

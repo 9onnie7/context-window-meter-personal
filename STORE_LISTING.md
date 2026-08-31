@@ -1,5 +1,10 @@
 # Chrome Web Store listing copy
 
+> Reference copy of the **upstream** store listing
+> ([joostmbakker/context-window-meter](https://github.com/joostmbakker/context-window-meter)),
+> retained for attribution. This personal fork is a separate project and is not
+> published under this listing.
+
 Reference copy for the Developer Dashboard fields. Not shipped in the extension package.
 
 ---

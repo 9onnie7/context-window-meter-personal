@@ -9,7 +9,7 @@ title: Privacy Policy — Context Window Meter for ChatGPT
 
 # Privacy Policy — Context Window Meter for ChatGPT
 
-_Last updated: 20 July 2026_
+_Last updated: 31 August 2026_
 
 ## Summary
 
@@ -18,8 +18,11 @@ This extension collects nothing, stores nothing, and sends nothing anywhere.
 ## What the extension does
 
 The extension runs only on `https://chatgpt.com/*`. It wraps the page's own
-`fetch` function so it can read the conversation JSON that ChatGPT already
-loads, count the tokens in it, and display the total in a badge on the page.
+`fetch` function so it can read ChatGPT conversation JSON, estimate its tokens,
+and display the result in a badge. On a conversation route or after a reply
+stream completes, it may read `/api/auth/session` and make one debounced,
+same-origin request to ChatGPT for that conversation's detail. Session credentials
+remain in page memory only and are never sent to another service.
 
 All of this happens in your browser tab, in memory, while the tab is open.
 
@@ -35,6 +38,14 @@ The extension does **not**:
 
 Conversation text is read to compute a token count and is discarded when the
 tab is closed or reloaded. Nothing persists between sessions.
+
+The session access token, when needed for the same-origin detail request, is
+kept only in the page runtime and is never stored or logged.
+
+The disabled-by-default tool-schema diagnostic, when manually enabled for
+debugging, logs only aggregate structural fingerprints in the browser console
+(roles, type names, metadata key names, and lengths), never conversation text,
+URLs, identifiers, or session data.
 
 ## Permissions
 
