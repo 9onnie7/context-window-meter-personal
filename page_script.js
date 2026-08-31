@@ -21,6 +21,9 @@
   // Personal-only overrides. Add a model slug and its inferred context limit here.
   // Example: 'my-model-slug': 200000,
   const PERSONAL_CONTEXT_LIMIT_OVERRIDES = {};
+  // Disabled by default. Enable temporarily only to inspect aggregate active-branch
+  // tool-schema fingerprints when a tool result is missing.
+  const TOOL_SCHEMA_DIAGNOSTICS = false;
   const CONVERSATION_REFRESH_DELAY_MS = 500;
   const AUTH_SESSION_URL = '/api/auth/session';
   let refreshTimer = null;
@@ -37,18 +40,29 @@
     return Math.max(0, Math.round(estimated));
   }
 
-  function resolveContextLimit(modelSlug) {
+  function trustedRuntimeContextLimit(modelSlug, runtimeModel) {
+    const slug = String(modelSlug || '').toLowerCase();
+    if (!runtimeModel || String(runtimeModel.modelSlug || '').toLowerCase() !== slug) return null;
+    const limit = runtimeModel.contextWindowTokens;
+    return Number.isSafeInteger(limit) && limit > 0 ? limit : null;
+  }
+
+  function resolveContextLimit(modelSlug, runtimeModel = null) {
     const slug = String(modelSlug || '').toLowerCase();
     if (Object.prototype.hasOwnProperty.call(PERSONAL_CONTEXT_LIMIT_OVERRIDES, slug)) {
-      return { limit: PERSONAL_CONTEXT_LIMIT_OVERRIDES[slug], source: 'override' };
+      return { limit: PERSONAL_CONTEXT_LIMIT_OVERRIDES[slug], source: 'personal override', confidence: 'user-configured' };
+    }
+    const runtimeLimit = trustedRuntimeContextLimit(slug, runtimeModel);
+    if (runtimeLimit) {
+      return { limit: runtimeLimit, source: 'ChatGPT runtime', confidence: 'confirmed' };
     }
     if (Object.prototype.hasOwnProperty.call(MODEL_CONTEXT_LIMITS, slug)) {
-      return { limit: MODEL_CONTEXT_LIMITS[slug], source: 'exact mapping' };
+      return { limit: MODEL_CONTEXT_LIMITS[slug], source: 'known ChatGPT inferred', confidence: 'inferred' };
     }
     for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
-      if (key !== 'default' && slug.includes(key)) return { limit, source: 'pattern mapping' };
+      if (key !== 'default' && slug.includes(key)) return { limit, source: 'conservative pattern', confidence: 'low' };
     }
-    return { limit: null, source: 'unknown' };
+    return { limit: null, source: 'unknown', confidence: 'unknown' };
   }
 
   function contextMetrics(totalTokens, limit) {
@@ -91,6 +105,7 @@
           modelDisplayName: null,
           modelSource: modelSlug ? 'backend' : 'unknown',
           limitSource: resolvedLimit.source,
+          limitConfidence: resolvedLimit.confidence,
           dataSource: 'backend',
           breakdown,
           charCount: Object.values(textByRole).reduce((a, b) => a + b.length, 0),
@@ -155,6 +170,30 @@
       null;
   }
 
+  function toolSchemaFingerprint(message) {
+    const content = message?.content || {};
+    const parts = Array.isArray(content.parts) ? content.parts : [];
+    const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+    return {
+      role: message?.author?.role || 'assistant',
+      authorName: typeof message?.author?.name === 'string' ? message.author.name : null,
+      recipient: typeof message?.recipient === 'string' ? message.recipient : null,
+      contentType: typeof content.content_type === 'string' ? content.content_type : null,
+      partKinds: [...new Set(parts.map(part => part === null ? 'null' : Array.isArray(part) ? 'array' : typeof part))],
+      metadataKeys: Object.keys(metadata).sort(),
+      estimatedLength: parts.reduce((total, part) => total + (typeof part === 'string' ? part.length : 0), 0)
+    };
+  }
+
+  function logToolSchemaDiagnostics(activeNodes) {
+    if (!TOOL_SCHEMA_DIAGNOSTICS) return;
+    const fingerprints = activeNodes
+      .map(node => toolSchemaFingerprint(node.message))
+      .filter(item => item.role === 'tool' || item.authorName === 'web.search' || item.recipient ||
+        /(?:tool|search|browse|execution)/i.test(item.contentType || ''));
+    if (fingerprints.length) console.info?.('[ChatGPT Token Tracker] Tool schema fingerprints', { count: fingerprints.length, fingerprints });
+  }
+
   function processJsonMapping(jsonObj) {
     if (!jsonObj || typeof jsonObj !== 'object') return;
     const mapping = jsonObj.mapping;
@@ -183,6 +222,8 @@
 
     if (activeNodes.length > 0) activeNodes.reverse();
     else activeNodes.push(...Object.values(mapping));
+
+    logToolSchemaDiagnostics(activeNodes);
 
     for (const node of activeNodes) {
       const msg = node.message;

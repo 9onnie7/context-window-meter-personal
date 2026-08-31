@@ -139,7 +139,7 @@ test('counts only active-branch content across conversation JSON schemas', async
   assert.equal(usage.breakdown.assistant, 0);
 });
 
-test('resolves overrides before mappings and clamps context math', () => {
+test('resolves override, trusted runtime, and inferred context limits without API fallback', () => {
   const window = { fetch() {}, postMessage() {} };
   window.window = window;
   runScript('page_script.js', { window, console: { log() {}, error() {} } }, source => source
@@ -147,9 +147,26 @@ test('resolves overrides before mappings and clamps context math', () => {
     .replace('})();', ';window.__meterTestApi = { resolveContextLimit, contextMetrics };})();')
   );
 
-  assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('gpt-5')), JSON.stringify({ limit: 12345, source: 'override' }));
-  assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('gpt-4o')), JSON.stringify({ limit: 128000, source: 'exact mapping' }));
-  assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('unknown-model')), JSON.stringify({ limit: null, source: 'unknown' }));
+  const resolve = (...args) => JSON.stringify(window.__meterTestApi.resolveContextLimit(...args));
+
+  assert.equal(resolve('gpt-5', { modelSlug: 'gpt-5', contextWindowTokens: 180000 }), JSON.stringify({
+    limit: 12345, source: 'personal override', confidence: 'user-configured'
+  }));
+  assert.equal(resolve('gpt-4o', { modelSlug: 'gpt-4o', contextWindowTokens: 180000 }), JSON.stringify({
+    limit: 180000, source: 'ChatGPT runtime', confidence: 'confirmed'
+  }));
+  assert.equal(resolve('gpt-5-6-thinking'), JSON.stringify({
+    limit: 200000, source: 'known ChatGPT inferred', confidence: 'inferred'
+  }));
+  assert.equal(resolve('gpt-5-6-thinking', { modelSlug: 'gpt-5-6-thinking', outputTokens: 1050000 }), JSON.stringify({
+    limit: 200000, source: 'known ChatGPT inferred', confidence: 'inferred'
+  }));
+  assert.equal(resolve('gpt-4o', { modelSlug: 'other-model', contextWindowTokens: 999999 }), JSON.stringify({
+    limit: 128000, source: 'known ChatGPT inferred', confidence: 'inferred'
+  }));
+  assert.equal(resolve('unknown-model'), JSON.stringify({
+    limit: null, source: 'unknown', confidence: 'unknown'
+  }));
   assert.equal(JSON.stringify(window.__meterTestApi.contextMetrics(250, 100)), JSON.stringify({
     totalTokens: 250,
     limit: 100,
@@ -164,6 +181,17 @@ test('resolves overrides before mappings and clamps context math', () => {
     leftPercent: null,
     remainingTokens: null
   }));
+});
+
+test('uses full-mapping wording and keeps tool diagnostics disabled by default', () => {
+  const pageScript = fs.readFileSync(path.join(projectRoot, 'page_script.js'), 'utf8');
+  const contentScript = fs.readFileSync(path.join(projectRoot, 'content.js'), 'utf8');
+
+  assert.match(pageScript, /const TOOL_SCHEMA_DIAGNOSTICS = false;/);
+  assert.match(pageScript, /Tool schema fingerprints/);
+  assert.match(contentScript, /'Estimated · full mapping'/);
+  assert.doesNotMatch(contentScript, /Estimated · \$\{currentData\.limitSource\}/);
+  assert.match(contentScript, /Limit: \$\{currentData\.limitConfidence \|\| 'unknown'\}/);
 });
 
 test('keeps an undetected backend model and context limit unknown', async () => {

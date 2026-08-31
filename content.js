@@ -111,6 +111,7 @@
       },
       dataSource: 'dom',
       limitSource: 'unknown',
+      limitConfidence: 'unknown',
       updatedAt: new Date().toISOString()
     };
   }
@@ -323,7 +324,10 @@
     const modelName = currentData.modelDisplayName || currentData.modelSlug || 'Unknown';
     const footer = currentData.dataSource === 'dom'
       ? 'Partial DOM estimate · may exclude unloaded history'
-      : `Estimated · ${currentData.limitSource}`;
+      : 'Estimated · full mapping';
+    const footerTitle = currentData.dataSource === 'dom'
+      ? 'Token usage is estimated from visible DOM content only.'
+      : `Token usage is estimated from the full active mapping. Limit: ${currentData.limitConfidence || 'unknown'}.`;
 
     detailsCard.innerHTML = `
       <div class="gpt-token-card-head">
@@ -358,7 +362,7 @@
       </div>
 
       <div class="gpt-token-foot">
-        <span title="Token usage is estimated from available conversation data.">${escapeHtml(footer)}</span>
+        <span title="${escapeHtml(footerTitle)}">${escapeHtml(footer)}</span>
         <button id="gpt-token-close-btn" type="button">Close</button>
       </div>
     `;

@@ -1,6 +1,6 @@
 # Privacy Policy — Context Window Meter for ChatGPT
 
-_Last updated: 20 July 2026_
+_Last updated: 31 August 2026_
 
 _This personal fork has no published privacy-policy copy or remote service._
 
@@ -34,6 +34,11 @@ tab is closed or reloaded. Nothing persists between sessions.
 
 The session access token, when needed for the same-origin detail request, is
 kept only in the page runtime and is never stored or logged.
+
+The disabled-by-default tool-schema diagnostic, when manually enabled for
+debugging, logs only aggregate structural fingerprints in the browser console
+(roles, type names, metadata key names, and lengths), never conversation text,
+URLs, identifiers, or session data.
 
 ## Permissions
 

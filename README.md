@@ -2,7 +2,7 @@
 
 Personal enhanced fork of [joostmbakker/context-window-meter](https://github.com/joostmbakker/context-window-meter), under the original MIT license. It is a Manifest V3 Chrome extension that shows estimated ChatGPT context usage locally in the current tab.
 
-The primary badge shows **Context XX% left**. Click it for estimated used/left tokens, detected model, context-limit source, and category breakdown. These values are estimates from visible conversation data and inferred model limits; they are not OpenAI's backend token accounting.
+The primary badge shows **Context XX% left**. Click it for estimated used/left tokens, detected model, context-limit provenance, and category breakdown. These values are estimates from the active conversation mapping and inferred model limits; they are not OpenAI's backend token accounting.
 
 > Independent project — not affiliated with, endorsed by, or sponsored by OpenAI. "ChatGPT" is a trademark of OpenAI.
 
@@ -15,6 +15,7 @@ ChatGPT gives you no indication of how full the context window is. You find out 
 - Context-left badge and compact estimated-context panel
 - Context guard at 35%, 25%, and 15% left (no notifications or blocking)
 - Static personal model-limit overrides in `page_script.js`
+- Known model limits are labelled as inferred unless an explicitly matched ChatGPT runtime context-window value is available
 - One debounced same-origin conversation refresh on normal, Project, and Custom GPT conversation routes
 - Ephemeral same-origin session auth for the conversation-detail request; credentials stay in page memory
 - Honest partial-DOM mode when full conversation data or its model limit is unavailable
@@ -76,7 +77,7 @@ for s in 16 48 128; do rsvg-convert -w $s -h $s icons/icon.svg -o icons/icon$s.p
 - Token counts and context limits are **estimates**; they are not OpenAI backend accounting.
 - DOM fallback is partial and may exclude history unloaded by ChatGPT. Unknown models and limits remain visibly unknown.
 - The extension depends on ChatGPT's internal response shape, which OpenAI can change without notice. If the badge stops updating, that is the likely cause.
-- Context limits are inferred from the model slug and may lag behind new model releases.
+- Context limits are inferred from the model slug unless an explicitly matched ChatGPT runtime context-window value is available; they may lag behind new model releases.
 
 ## License
 
