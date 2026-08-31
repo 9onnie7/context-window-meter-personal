@@ -47,7 +47,7 @@ The thing eating your context window is usually not the thing you'd guess. Long 
 
 PRIVACY
 
-This extension collects nothing and sends nothing anywhere.
+This extension does not send your data to the developer or to third parties; it only makes same-origin requests to chatgpt.com.
 
 There is no server, no analytics, no telemetry, and no account. It reads the conversation data your browser has already loaded, counts the tokens, displays the number, and forgets it when you close the tab. Nothing is written to disk or to browser storage.
 

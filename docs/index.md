@@ -13,7 +13,7 @@ _Last updated: 31 August 2026_
 
 ## Summary
 
-This extension collects nothing, stores nothing, and sends nothing anywhere.
+This extension does not collect or persist your data and does not send conversation data, credentials, or analytics to the developer or to third parties. It only makes the documented same-origin requests to chatgpt.com described below.
 
 ## What the extension does
 
@@ -30,7 +30,7 @@ All of this happens in your browser tab, in memory, while the tab is open.
 
 The extension does **not**:
 
-- transmit any data off your device, to the developer or to any third party
+- transmit conversation data, credentials, or analytics to the developer or to any third party
 - store conversation content on disk, in `chrome.storage`, in `localStorage`, or in cookies
 - use analytics, telemetry, tracking pixels, or advertising identifiers
 - read pages or requests on any site other than `chatgpt.com`

@@ -22,7 +22,7 @@ ChatGPT gives you no indication of how full the context window is. You find out 
 - Honest partial-DOM mode when full conversation data or its model limit is unavailable
 - Privacy-safe optional structural tool-schema diagnostic (disabled by default)
 
-Everything runs locally in the tab. No data leaves your browser, nothing is stored, and the extension can only access `chatgpt.com`. See the [privacy policy](PRIVACY.md).
+Everything is processed locally in the tab. The extension sends no conversation data to the developer or to third parties; it only makes the documented same-origin requests to chatgpt.com using your existing session, and it does not persist conversation or credential data. See the [privacy policy](PRIVACY.md).
 
 ### Personal context-limit override
 
