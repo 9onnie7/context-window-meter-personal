@@ -15,7 +15,8 @@ ChatGPT gives you no indication of how full the context window is. You find out 
 - Context-left badge and compact estimated-context panel
 - Context guard at 35%, 25%, and 15% left (no notifications or blocking)
 - Static personal model-limit overrides in `page_script.js`
-- One debounced same-origin conversation refresh after a reply stream finishes, avoiding per-token recalculation
+- One debounced same-origin conversation refresh on initial/SPA routes and after a reply stream finishes
+- Honest partial-DOM mode when full conversation data or its model limit is unavailable
 
 Everything runs locally in the tab. No data leaves your browser, nothing is stored, and the extension can only access `chatgpt.com`. See the [privacy policy](PRIVACY.md).
 
@@ -41,7 +42,7 @@ const PERSONAL_CONTEXT_LIMIT_OVERRIDES = {
 
 ## How it works
 
-1. **Response interception** — a `MAIN`-world script wraps `fetch` to read ChatGPT conversation-detail JSON. After a reply stream finishes, it makes one debounced, same-origin conversation-detail refresh so the stable active branch is re-measured.
+1. **Response interception** — a `MAIN`-world script reads ChatGPT conversation-detail JSON. It makes one debounced, same-origin detail request on initial/SPA conversation routes and after a reply stream finishes.
 2. **Branch walk** — the conversation is a tree, not a list. Only the active branch from the root to `current_node` counts toward the context window, so the parser walks that path and ignores edited-away siblings.
 3. **Token estimation** — a lightweight heuristic across message categories, including reasoning traces, tool output, file search results, and the user profile / custom instructions block.
 4. **Badge** — a pill in the bottom-right, expanding on click into the category breakdown.
@@ -72,6 +73,7 @@ for s in 16 48 128; do rsvg-convert -w $s -h $s icons/icon.svg -o icons/icon$s.p
 ## Caveats
 
 - Token counts and context limits are **estimates**; they are not OpenAI backend accounting.
+- DOM fallback is partial and may exclude history unloaded by ChatGPT. Unknown models and limits remain visibly unknown.
 - The extension depends on ChatGPT's internal response shape, which OpenAI can change without notice. If the badge stops updating, that is the likely cause.
 - Context limits are inferred from the model slug and may lag behind new model releases.
 

@@ -18,6 +18,15 @@
     { key: 'system', label: 'System instructions', color: 'var(--gtu-cat-system)' }
   ];
 
+  const UI_MODEL_SELECTORS = [
+    '[data-testid="model-switcher-dropdown-button"]',
+    '[data-testid^="model-switcher-"][aria-checked="true"]',
+    '[role="menuitemradio"][aria-checked="true"]',
+    '[data-testid*="composer"][data-testid*="model"]',
+    '[class*="__composer-pill"]',
+    'button[aria-label*="model" i]'
+  ];
+
   function estimateTokens(text) {
     if (!text || typeof text !== 'string') return 0;
     const words = text.match(/\w+/g) || [];
@@ -38,6 +47,71 @@
     if (leftPercent <= 25) return 'New chat recommended';
     if (leftPercent <= 35) return 'Consider wrapping up this phase';
     return '';
+  }
+
+  function hasKnownContext(data) {
+    return Number.isFinite(data?.limit) && data.limit > 0 &&
+      Number.isFinite(data.percentage) && Number.isFinite(data.leftPercent);
+  }
+
+  function contextWarning(data) {
+    return hasKnownContext(data) ? guardMessage(data.leftPercent) : '';
+  }
+
+  function modelLabelFromElement(element) {
+    if (!element) return null;
+    const raw = element.getAttribute?.('aria-label') ||
+      element.getAttribute?.('title') ||
+      element.innerText || element.textContent || '';
+    let label = String(raw).replace(/\s+/g, ' ').trim();
+    const described = label.match(/(?:current model(?:\s+is)?|model)\s*(?:[:,-]\s*|\bis\s+)(.+)$/i);
+    if (described) label = described[1].trim();
+    if (!label || label.length > 80 || /^(?:choose|select|switch)\s+(?:a\s+)?model$/i.test(label) || /^model(?: selector)?$/i.test(label)) return null;
+    return label;
+  }
+
+  function detectUiModel() {
+    for (const selector of UI_MODEL_SELECTORS) {
+      const element = document.querySelector?.(selector);
+      if (element?.getClientRects && element.getClientRects().length === 0) continue;
+      const modelDisplayName = modelLabelFromElement(element);
+      if (!modelDisplayName) continue;
+      return {
+        modelSlug: element.getAttribute?.('data-model-slug') || null,
+        modelDisplayName,
+        modelSource: 'ui'
+      };
+    }
+    return { modelSlug: null, modelDisplayName: 'Unknown', modelSource: 'unknown' };
+  }
+
+  function withModelFallback(data) {
+    if (data?.modelSource === 'backend' && data.modelSlug) {
+      return { ...data, modelDisplayName: data.modelDisplayName || data.modelSlug };
+    }
+    const uiModel = detectUiModel();
+    return { ...data, ...uiModel };
+  }
+
+  function createDomEstimate(totalTokens, userTokens, assistantTokens) {
+    return {
+      totalTokens,
+      limit: null,
+      percentage: null,
+      leftPercent: null,
+      remainingTokens: null,
+      ...detectUiModel(),
+      breakdown: {
+        user: userTokens,
+        assistant: assistantTokens,
+        tool: 0,
+        thought: 0,
+        system: 0
+      },
+      dataSource: 'dom',
+      limitSource: 'unknown',
+      updatedAt: new Date().toISOString()
+    };
   }
 
   function formatNumber(num) {
@@ -145,7 +219,7 @@
 
   function updateWidgetUI(data) {
     createWidget();
-    currentData = data;
+    currentData = withModelFallback(data);
 
     if (emptyStateTimer && typeof clearTimeout === 'function') {
       clearTimeout(emptyStateTimer);
@@ -156,25 +230,28 @@
     const ringPath = document.getElementById('gpt-token-ring-path');
     const pctText = document.getElementById('gpt-token-pct-text');
     const countText = document.getElementById('gpt-token-count-text');
-    const leftPercent = Number.isFinite(data.leftPercent) ? Math.max(0, Math.min(100, data.leftPercent)) : Math.max(0, 100 - data.percentage);
-    const color = getStateColor(leftPercent);
+    const knownContext = hasKnownContext(currentData);
+    const leftPercent = knownContext ? Math.max(0, Math.min(100, currentData.leftPercent)) : null;
+    const color = knownContext ? getStateColor(leftPercent) : 'var(--gtu-text-3)';
 
     if (ringPath) {
-      ringPath.setAttribute('stroke-dasharray', `${leftPercent}, 100`);
+      ringPath.setAttribute('stroke-dasharray', `${leftPercent || 0}, 100`);
       ringPath.setAttribute('stroke', color);
     }
 
     if (pctText) {
-      pctText.innerText = `${Math.round(leftPercent)}%`;
+      pctText.innerText = knownContext ? `${Math.round(leftPercent)}%` : '—';
     }
 
     if (countText) {
-      countText.innerText = `${Math.round(leftPercent)}% left`;
+      countText.innerText = knownContext ? `${Math.round(leftPercent)}% left` : `~${formatNumber(currentData.totalTokens)} tokens`;
     }
 
     widgetContainer.setAttribute(
       'aria-label',
-      `Estimated context: ${Math.round(leftPercent)} percent left, ${Math.round(data.percentage)} percent used.`
+      knownContext
+        ? `Estimated context: ${Math.round(leftPercent)} percent left, ${Math.round(currentData.percentage)} percent used.`
+        : `Partial DOM estimate: ${formatNumber(currentData.totalTokens)} estimated tokens. Context limit unknown.`
     );
 
     if (isCardOpen) {
@@ -236,32 +313,43 @@
       return;
     }
 
-    const leftPercent = Number.isFinite(currentData.leftPercent) ? Math.max(0, Math.min(100, currentData.leftPercent)) : Math.max(0, 100 - currentData.percentage);
-    const color = getStateColor(leftPercent);
+    const knownContext = hasKnownContext(currentData);
+    const leftPercent = knownContext ? Math.max(0, Math.min(100, currentData.leftPercent)) : null;
+    const color = knownContext ? getStateColor(leftPercent) : 'var(--gtu-text)';
     const breakdown = currentData.breakdown || {};
-    const remainingTokens = Number.isFinite(currentData.remainingTokens) ? Math.max(0, currentData.remainingTokens) : Math.max(0, currentData.limit - currentData.totalTokens);
-    const warning = guardMessage(leftPercent);
+    const remainingTokens = knownContext ? Math.max(0, currentData.remainingTokens) : null;
+    const warning = contextWarning(currentData);
+    const modelName = currentData.modelDisplayName || currentData.modelSlug || 'Unknown';
+    const footer = currentData.dataSource === 'dom'
+      ? 'Partial DOM estimate · may exclude unloaded history'
+      : `Estimated · ${currentData.limitSource}`;
 
     detailsCard.innerHTML = `
       <div class="gpt-token-card-head">
         <span class="gpt-token-card-title">Estimated context</span>
-        <span class="gpt-token-model">${escapeHtml(currentData.modelSlug || 'gpt-4o')}</span>
+        <span class="gpt-token-model">${escapeHtml(modelName)}</span>
       </div>
 
-      <div class="gpt-token-headline">
-        <span class="gpt-token-headline-pct" style="color: ${color};">${Math.round(currentData.percentage)}%</span>
-        <span class="gpt-token-headline-note">used</span>
-      </div>
-      <div class="gpt-token-headline-sub">
-        ${formatNumber(currentData.totalTokens)} / ${formatNumber(currentData.limit)} estimated tokens<br>
-        ${formatNumber(remainingTokens)} estimated tokens left · ${Math.round(leftPercent)}% left
-      </div>
+      ${knownContext ? `
+        <div class="gpt-token-headline">
+          <span class="gpt-token-headline-pct" style="color: ${color};">${Math.round(currentData.percentage)}%</span>
+          <span class="gpt-token-headline-note">used</span>
+        </div>
+        <div class="gpt-token-headline-sub">
+          ${formatNumber(currentData.totalTokens)} / ${formatNumber(currentData.limit)} estimated tokens<br>
+          ${formatNumber(remainingTokens)} estimated tokens left · ${Math.round(leftPercent)}% left
+        </div>
+      ` : `
+        <div class="gpt-token-headline">
+          <span class="gpt-token-headline-pct">~${formatNumber(currentData.totalTokens)}</span>
+          <span class="gpt-token-headline-note">tokens</span>
+        </div>
+        <div class="gpt-token-headline-sub">Context limit unknown · percentage unavailable</div>
+      `}
 
       ${warning ? `<div class="gpt-token-guard" style="color: ${color};">${warning}</div>` : ''}
 
-      <div class="gpt-token-bar">
-        ${renderSegments(breakdown, currentData.limit)}
-      </div>
+      ${knownContext ? `<div class="gpt-token-bar">${renderSegments(breakdown, currentData.limit)}</div>` : ''}
 
       <div class="gpt-token-legend">
         <div class="gpt-token-legend-title">What is filling it</div>
@@ -269,7 +357,7 @@
       </div>
 
       <div class="gpt-token-foot">
-        <span title="Token usage is estimated from visible conversation data and inferred model limits.">Estimated · ${escapeHtml(currentData.limitSource || 'default fallback')}</span>
+        <span title="Token usage is estimated from available conversation data.">${escapeHtml(footer)}</span>
         <button id="gpt-token-close-btn" type="button">Close</button>
       </div>
     `;
@@ -283,7 +371,7 @@
 
   // Enhanced DOM Fallback Scanner
   function scanDOMFallback() {
-    if (currentData && currentData.limitSource !== 'DOM fallback' && currentData.totalTokens > 0) return;
+    if (currentData?.dataSource === 'backend' && currentData.totalTokens > 0) return;
 
     const articles = document.querySelectorAll('article');
     let userText = '';
@@ -310,28 +398,8 @@
     const totalTokens = userTokens + assistantTokens;
 
     if (totalTokens > 0) {
-      const limit = 128000;
-      const percentage = Math.min(100, (totalTokens / limit) * 100);
-
-      console.log(`[ChatGPT Token Tracker] DOM Scan Fallback: ${totalTokens} tokens (${percentage.toFixed(1)}%) from ${articles.length} articles`);
-
-      updateWidgetUI({
-        totalTokens,
-        limit,
-        percentage: parseFloat(percentage.toFixed(2)),
-        leftPercent: parseFloat((100 - percentage).toFixed(2)),
-        remainingTokens: Math.max(0, limit - totalTokens),
-        modelSlug: 'gpt-4o',
-        breakdown: {
-          user: userTokens,
-          assistant: assistantTokens,
-          tool: 0,
-          thought: 0,
-          system: 0
-        },
-        limitSource: 'DOM fallback',
-        updatedAt: new Date().toISOString()
-      });
+      console.log(`[ChatGPT Token Tracker] Partial DOM estimate: ${totalTokens} tokens from ${articles.length} articles`);
+      updateWidgetUI(createDomEstimate(totalTokens, userTokens, assistantTokens));
     }
   }
 

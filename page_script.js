@@ -15,8 +15,7 @@
     'gpt-4o-mini': 128000,
     'gpt-4-turbo': 128000,
     'gpt-4': 8192,
-    'gpt-3.5-turbo': 16384,
-    'default': 128000
+    'gpt-3.5-turbo': 16384
   };
 
   // Personal-only overrides. Add a model slug and its inferred context limit here.
@@ -24,6 +23,8 @@
   const PERSONAL_CONTEXT_LIMIT_OVERRIDES = {};
   const CONVERSATION_REFRESH_DELAY_MS = 500;
   let refreshTimer = null;
+  let lastRouteConversationId = null;
+  let inFlightConversationId = null;
 
   function estimateTokens(text) {
     if (!text || typeof text !== 'string') return 0;
@@ -44,19 +45,19 @@
     for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
       if (key !== 'default' && slug.includes(key)) return { limit, source: 'pattern mapping' };
     }
-    return { limit: MODEL_CONTEXT_LIMITS.default, source: 'default fallback' };
+    return { limit: null, source: 'unknown' };
   }
 
   function contextMetrics(totalTokens, limit) {
     const safeTotal = Number.isFinite(totalTokens) ? Math.max(0, totalTokens) : 0;
-    const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 0;
-    const usedPercent = safeLimit ? Math.min(100, (safeTotal / safeLimit) * 100) : 0;
-    const remainingTokens = safeLimit ? Math.max(0, safeLimit - safeTotal) : 0;
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : null;
+    const usedPercent = safeLimit ? Math.min(100, (safeTotal / safeLimit) * 100) : null;
+    const remainingTokens = safeLimit ? Math.max(0, safeLimit - safeTotal) : null;
     return {
       totalTokens: safeTotal,
       limit: safeLimit,
-      percentage: Number(usedPercent.toFixed(2)),
-      leftPercent: Number((safeLimit ? (remainingTokens / safeLimit) * 100 : 0).toFixed(2)),
+      percentage: usedPercent == null ? null : Number(usedPercent.toFixed(2)),
+      leftPercent: safeLimit ? Number(((remainingTokens / safeLimit) * 100).toFixed(2)) : null,
       remainingTokens
     };
   }
@@ -76,7 +77,7 @@
     const resolvedLimit = resolveContextLimit(modelSlug);
     const metrics = contextMetrics(totalTokens, resolvedLimit.limit);
 
-    console.log(`[ChatGPT Token Tracker] Estimated tokens: ${metrics.totalTokens} (${metrics.percentage.toFixed(1)}% used) for ${modelSlug}`);
+    console.log(`[ChatGPT Token Tracker] Estimated tokens: ${metrics.totalTokens}; model: ${modelSlug || 'unknown'}; limit source: ${resolvedLimit.source}`);
 
     window.postMessage(
       {
@@ -84,7 +85,10 @@
         data: {
           ...metrics,
           modelSlug,
+          modelDisplayName: null,
+          modelSource: modelSlug ? 'backend' : 'unknown',
           limitSource: resolvedLimit.source,
+          dataSource: 'backend',
           breakdown,
           charCount: Object.values(textByRole).reduce((a, b) => a + b.length, 0),
           updatedAt: new Date().toISOString()
@@ -153,7 +157,7 @@
     const mapping = jsonObj.mapping;
     if (!mapping || typeof mapping !== 'object') return;
 
-    let modelSlug = jsonObj.default_model_slug || 'gpt-4o';
+    let modelSlug = jsonObj.default_model_slug || null;
     const textByRole = {
       user: '',
       assistant: '',
@@ -204,6 +208,77 @@
     return window.location?.pathname.match(/^\/c\/([^/?#]+)/)?.[1] || null;
   }
 
+  function safePathname(url) {
+    try {
+      return new URL(url, window.location.origin).pathname;
+    } catch (error) {
+      return '';
+    }
+  }
+
+  async function processDetailResponse(response, requestUrl, method = 'GET') {
+    const contentType = response.headers?.get('content-type') || '';
+    let json = null;
+    let parseError = false;
+
+    if (response.ok && contentType.includes('json')) {
+      try {
+        json = await response.json();
+      } catch (error) {
+        parseError = true;
+      }
+    }
+
+    const hasMapping = Boolean(json?.mapping && typeof json.mapping === 'object');
+    const modelSlug = json?.default_model_slug || null;
+    console.info?.('[ChatGPT Token Tracker] Conversation detail result', {
+      pathname: safePathname(requestUrl),
+      method,
+      status: response.status,
+      contentType,
+      hasMapping,
+      hasCurrentNode: Boolean(json?.current_node),
+      modelSlug,
+      parseError
+    });
+
+    if (hasMapping) processJsonMapping(json);
+    return hasMapping;
+  }
+
+  function requestConversationDetail(conversationId) {
+    if (!conversationId || inFlightConversationId === conversationId) return;
+    const requestUrl = `/backend-api/conversation/${encodeURIComponent(conversationId)}`;
+    inFlightConversationId = conversationId;
+
+    originalFetch.call(window, requestUrl, { credentials: 'same-origin' })
+      .then(response => processDetailResponse(response, requestUrl))
+      .catch(() => console.info?.('[ChatGPT Token Tracker] Conversation detail result', {
+        pathname: requestUrl,
+        method: 'GET',
+        status: 'network-error'
+      }))
+      .finally(() => {
+        if (inFlightConversationId === conversationId) inFlightConversationId = null;
+      });
+  }
+
+  function scheduleConversationRefresh(conversationId = currentConversationId()) {
+    if (!conversationId || typeof setTimeout !== 'function') return;
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      requestConversationDetail(conversationId);
+    }, CONVERSATION_REFRESH_DELAY_MS);
+  }
+
+  function handleRouteChange() {
+    const conversationId = currentConversationId();
+    if (conversationId === lastRouteConversationId) return;
+    lastRouteConversationId = conversationId;
+    if (conversationId) scheduleConversationRefresh(conversationId);
+  }
+
   function refreshConversationAfterStream(response) {
     if (!response.body?.getReader) return;
     const reader = response.clone().body.getReader();
@@ -211,8 +286,7 @@
       if (!done) return drain();
       const conversationId = currentConversationId();
       if (!conversationId) return;
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => window.fetch(`/backend-api/conversation/${conversationId}`), CONVERSATION_REFRESH_DELAY_MS);
+      scheduleConversationRefresh(conversationId);
     }).catch(() => {});
     drain();
   }
@@ -225,12 +299,8 @@
     try {
       const targetUrl = response.url || (typeof args[0] === 'string' ? args[0] : args[0]?.url || '');
       if (isConversationDetail(targetUrl)) {
-
-        response.clone().json().then(json => {
-          processJsonMapping(json);
-        }).catch(err => {
-          console.error('[ChatGPT Token Tracker] Conversation JSON parse error:', err);
-        });
+        const method = String(args[1]?.method || args[0]?.method || 'GET').toUpperCase();
+        processDetailResponse(response.clone(), targetUrl, method);
       } else if (isConversationSubmission(targetUrl)) refreshConversationAfterStream(response);
     } catch (err) {
       console.error('[ChatGPT Token Tracker] Fetch intercept error:', err);
@@ -238,4 +308,17 @@
 
     return response;
   };
+
+  for (const method of ['pushState', 'replaceState']) {
+    const original = window.history?.[method];
+    if (typeof original !== 'function') continue;
+    window.history[method] = function (...args) {
+      const result = original.apply(this, args);
+      if (typeof setTimeout === 'function') setTimeout(handleRouteChange, 0);
+      return result;
+    };
+  }
+  window.addEventListener?.('popstate', handleRouteChange);
+  window.navigation?.addEventListener?.('navigatesuccess', handleRouteChange);
+  if (typeof setTimeout === 'function') setTimeout(handleRouteChange, 0);
 })();

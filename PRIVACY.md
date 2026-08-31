@@ -12,9 +12,9 @@ This extension collects nothing, stores nothing, and sends nothing anywhere.
 
 The extension runs only on `https://chatgpt.com/*`. It wraps the page's own
 `fetch` function so it can read ChatGPT conversation JSON, estimate its tokens,
-and display the result in a badge. After a reply stream completes, it may make
-one same-origin request to ChatGPT for that conversation's detail; it never
-sends conversation data to another service.
+and display the result in a badge. On a conversation route or after a reply
+stream completes, it may make one debounced same-origin request to ChatGPT for
+that conversation's detail; it never sends conversation data to another service.
 
 All of this happens in your browser tab, in memory, while the tab is open.
 

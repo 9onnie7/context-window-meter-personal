@@ -149,7 +149,7 @@ test('resolves overrides before mappings and clamps context math', () => {
 
   assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('gpt-5')), JSON.stringify({ limit: 12345, source: 'override' }));
   assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('gpt-4o')), JSON.stringify({ limit: 128000, source: 'exact mapping' }));
-  assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('unknown-model')), JSON.stringify({ limit: 128000, source: 'default fallback' }));
+  assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('unknown-model')), JSON.stringify({ limit: null, source: 'unknown' }));
   assert.equal(JSON.stringify(window.__meterTestApi.contextMetrics(250, 100)), JSON.stringify({
     totalTokens: 250,
     limit: 100,
@@ -159,11 +159,42 @@ test('resolves overrides before mappings and clamps context math', () => {
   }));
   assert.equal(JSON.stringify(window.__meterTestApi.contextMetrics(NaN, 0)), JSON.stringify({
     totalTokens: 0,
-    limit: 0,
-    percentage: 0,
-    leftPercent: 0,
-    remainingTokens: 0
+    limit: null,
+    percentage: null,
+    leftPercent: null,
+    remainingTokens: null
   }));
+});
+
+test('keeps an undetected backend model and context limit unknown', async () => {
+  const updates = [];
+  const responseBody = JSON.stringify({
+    current_node: 'message',
+    mapping: {
+      message: {
+        parent: null,
+        message: { author: { role: 'user' }, content: { parts: ['unknown model'] } }
+      }
+    }
+  });
+  const window = {
+    fetch: async () => new Response(responseBody, { headers: { 'content-type': 'application/json' } }),
+    postMessage(message) {
+      if (message.type === 'CHATGPT_TOKEN_USAGE_UPDATE') updates.push(message.data);
+    }
+  };
+  window.window = window;
+  runScript('page_script.js', { window, Response, console: { log() {}, info() {}, error() {} } });
+
+  await window.fetch('/backend-api/conversation/conversation-id');
+  await waitForStreams();
+
+  const usage = updates.at(-1);
+  assert.equal(usage.modelSlug, null);
+  assert.equal(usage.modelSource, 'unknown');
+  assert.equal(usage.limit, null);
+  assert.equal(usage.percentage, null);
+  assert.equal(usage.leftPercent, null);
 });
 
 test('refreshes the active conversation once after a reply stream finishes', async () => {
@@ -180,10 +211,12 @@ test('refreshes the active conversation once after a reply stream finishes', asy
   });
   const requestedUrls = [];
   const window = {
-    location: { pathname: '/c/conversation-id' },
+    location: { pathname: '/' },
     fetch: async url => {
       requestedUrls.push(url);
-      return new Response(url === '/backend-api/f/conversation' ? 'data: [DONE]\n\n' : detail);
+      return new Response(url === '/backend-api/f/conversation' ? 'data: [DONE]\n\n' : detail, {
+        headers: { 'content-type': url === '/backend-api/f/conversation' ? 'text/event-stream' : 'application/json' }
+      });
     },
     postMessage(message) {
       if (message.type === 'CHATGPT_TOKEN_USAGE_UPDATE') updates.push(message.data);
@@ -192,11 +225,104 @@ test('refreshes the active conversation once after a reply stream finishes', asy
   window.window = window;
   runScript('page_script.js', { window, Response, setTimeout, clearTimeout, console: { log() {}, error() {} } });
 
-  await window.fetch('/backend-api/f/conversation');
+  const submission = window.fetch('/backend-api/f/conversation');
+  window.location.pathname = '/c/conversation-id';
+  await submission;
   await new Promise(resolve => setTimeout(resolve, 600));
 
   assert.ok(requestedUrls.includes('/backend-api/conversation/conversation-id'));
+  assert.equal(requestedUrls.filter(url => url === '/backend-api/conversation/conversation-id').length, 1);
   assert.ok(updates.at(-1), 'the refreshed detail should produce a usage update');
+});
+
+test('fetches one same-origin detail response on an initial conversation route', async () => {
+  const requested = [];
+  const detail = JSON.stringify({
+    current_node: 'message',
+    default_model_slug: 'gpt-4o',
+    mapping: {
+      message: {
+        parent: null,
+        message: { author: { role: 'user' }, content: { parts: ['initial route'] } }
+      }
+    }
+  });
+  const window = {
+    location: { pathname: '/c/initial-id', origin: 'https://chatgpt.com' },
+    history: {
+      pushState() {},
+      replaceState() {}
+    },
+    addEventListener() {},
+    fetch: async (url, options) => {
+      requested.push({ url, options });
+      return new Response(detail, { headers: { 'content-type': 'application/json' } });
+    },
+    postMessage() {}
+  };
+  window.window = window;
+  runScript('page_script.js', { window, URL, Response, setTimeout, clearTimeout, console: { log() {}, info() {}, error() {} } });
+
+  window.history.replaceState({}, '', '/c/initial-id');
+  await new Promise(resolve => setTimeout(resolve, 600));
+
+  const detailRequests = requested.filter(item => item.url === '/backend-api/conversation/initial-id');
+  assert.equal(detailRequests.length, 1);
+  assert.equal(detailRequests[0].options.credentials, 'same-origin');
+});
+
+test('extracts route ids and prefers backend model data over the UI label', () => {
+  let showModel = true;
+  const modelElement = {
+    innerText: 'Thinking',
+    getAttribute(name) {
+      if (name === 'aria-label') return 'Model: GPT-5.6 Thinking';
+      return null;
+    }
+  };
+  const document = {
+    readyState: 'loading',
+    addEventListener() {},
+    querySelector(selector) {
+      return showModel && selector.includes('__composer-pill') ? modelElement : null;
+    }
+  };
+  const window = { addEventListener() {} };
+  window.window = window;
+  runScript('content.js', { window, document, MutationObserver: class {}, Intl, console: { log() {} } }, source =>
+    source.replace('})();', ';window.__meterTestApi = { detectUiModel, withModelFallback, createDomEstimate, contextWarning };})();')
+  );
+
+  assert.equal(JSON.stringify(window.__meterTestApi.detectUiModel()), JSON.stringify({
+    modelSlug: null,
+    modelDisplayName: 'GPT-5.6 Thinking',
+    modelSource: 'ui'
+  }));
+  showModel = false;
+  assert.equal(window.__meterTestApi.detectUiModel().modelDisplayName, 'Unknown');
+  showModel = true;
+  const backend = window.__meterTestApi.withModelFallback({ modelSlug: 'backend-model', modelSource: 'backend' });
+  assert.equal(backend.modelDisplayName, 'backend-model');
+  assert.equal(backend.modelSource, 'backend');
+
+  const dom = window.__meterTestApi.createDomEstimate(100, 40, 60);
+  assert.equal(dom.dataSource, 'dom');
+  assert.equal(dom.limit, null);
+  assert.equal(dom.percentage, null);
+  assert.equal(window.__meterTestApi.contextWarning(dom), '');
+
+  const pageWindow = {
+    fetch() {},
+    postMessage() {},
+    location: { pathname: '/c/route-conversation-id' }
+  };
+  pageWindow.window = pageWindow;
+  runScript('page_script.js', { window: pageWindow, console: { log() {}, info() {}, error() {} } }, source =>
+    source.replace('})();', ';window.__meterTestApi = { currentConversationId };})();')
+  );
+  assert.equal(pageWindow.__meterTestApi.currentConversationId(), 'route-conversation-id');
+  pageWindow.location.pathname = '/';
+  assert.equal(pageWindow.__meterTestApi.currentConversationId(), null);
 });
 
 test('uses the intended context guard boundaries', () => {
@@ -286,7 +412,7 @@ test('ignores DOM mutations made by the tracker widget', () => {
     Intl,
     console: {
       log(message) {
-        if (message.includes('DOM Scan Fallback')) fallbackLogs++;
+        if (message.includes('Partial DOM estimate')) fallbackLogs++;
       }
     }
   });
