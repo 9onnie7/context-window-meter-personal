@@ -13,8 +13,9 @@ This extension collects nothing, stores nothing, and sends nothing anywhere.
 The extension runs only on `https://chatgpt.com/*`. It wraps the page's own
 `fetch` function so it can read ChatGPT conversation JSON, estimate its tokens,
 and display the result in a badge. On a conversation route or after a reply
-stream completes, it may make one debounced same-origin request to ChatGPT for
-that conversation's detail; it never sends conversation data to another service.
+stream completes, it may read `/api/auth/session` and make one debounced,
+same-origin request to ChatGPT for that conversation's detail. Session credentials
+remain in page memory only and are never sent to another service.
 
 All of this happens in your browser tab, in memory, while the tab is open.
 
@@ -30,6 +31,9 @@ The extension does **not**:
 
 Conversation text is read to compute a token count and is discarded when the
 tab is closed or reloaded. Nothing persists between sessions.
+
+The session access token, when needed for the same-origin detail request, is
+kept only in the page runtime and is never stored or logged.
 
 ## Permissions
 

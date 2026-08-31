@@ -214,7 +214,10 @@ test('refreshes the active conversation once after a reply stream finishes', asy
     location: { pathname: '/' },
     fetch: async url => {
       requestedUrls.push(url);
-      return new Response(url === '/backend-api/f/conversation' ? 'data: [DONE]\n\n' : detail, {
+      const body = url === '/api/auth/session'
+        ? JSON.stringify({ accessToken: 'test-token' })
+        : url === '/backend-api/f/conversation' ? 'data: [DONE]\n\n' : detail;
+      return new Response(body, {
         headers: { 'content-type': url === '/backend-api/f/conversation' ? 'text/event-stream' : 'application/json' }
       });
     },
@@ -256,7 +259,8 @@ test('fetches one same-origin detail response on an initial conversation route',
     addEventListener() {},
     fetch: async (url, options) => {
       requested.push({ url, options });
-      return new Response(detail, { headers: { 'content-type': 'application/json' } });
+      const body = url === '/api/auth/session' ? JSON.stringify({ accessToken: 'test-token' }) : detail;
+      return new Response(body, { headers: { 'content-type': 'application/json' } });
     },
     postMessage() {}
   };
@@ -269,6 +273,119 @@ test('fetches one same-origin detail response on an initial conversation route',
   const detailRequests = requested.filter(item => item.url === '/backend-api/conversation/11111111-2222-3333-4444-555555555555');
   assert.equal(detailRequests.length, 1);
   assert.equal(detailRequests[0].options.credentials, 'same-origin');
+});
+
+test('uses in-memory session auth for detail requests without logging secrets', async () => {
+  const requested = [];
+  const diagnostics = [];
+  const updates = [];
+  const detail = JSON.stringify({
+    current_node: 'message',
+    default_model_slug: 'gpt-5-6-thinking',
+    mapping: {
+      message: {
+        parent: null,
+        message: { author: { role: 'user' }, content: { parts: ['authenticated detail'] } }
+      }
+    }
+  });
+  const window = {
+    location: { pathname: '/', origin: 'https://chatgpt.com' },
+    fetch: async (url, options) => {
+      requested.push({ url, options });
+      const body = url === '/api/auth/session'
+        ? JSON.stringify({ accessToken: 'secret-token', chatgpt_account_id: 'secret-account' })
+        : detail;
+      return new Response(body, { headers: { 'content-type': 'application/json' } });
+    },
+    postMessage(message) {
+      if (message.type === 'CHATGPT_TOKEN_USAGE_UPDATE') updates.push(message.data);
+    }
+  };
+  window.window = window;
+  runScript('page_script.js', {
+    window,
+    URL,
+    Response,
+    console: { log() {}, error() {}, info(...args) { diagnostics.push(JSON.stringify(args)); } }
+  }, source => source.replace('})();', ';window.__meterTestApi = { requestConversationDetail };})();'));
+
+  await window.__meterTestApi.requestConversationDetail('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+
+  const detailRequest = requested.at(-1);
+  assert.equal(requested.length, 2, 'session and detail should use the saved original fetch exactly once each');
+  assert.equal(detailRequest.options.headers.Authorization, 'Bearer secret-token');
+  assert.equal(detailRequest.options.headers['ChatGPT-Account-ID'], 'secret-account');
+  assert.ok(updates.at(-1), 'authenticated mapping should reach the existing parser');
+  assert.doesNotMatch(diagnostics.join('\n'), /secret-token|secret-account/);
+});
+
+test('stays partial when session has no access token and never invents an account id', async () => {
+  const requested = [];
+  const window = {
+    location: { pathname: '/', origin: 'https://chatgpt.com' },
+    fetch: async (url, options) => {
+      requested.push({ url, options });
+      return new Response(JSON.stringify({ account: { id: 'workspace-id' } }), {
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  };
+  window.window = window;
+  runScript('page_script.js', { window, URL, Response, console: { log() {}, info() {}, error() {} } }, source =>
+    source.replace('})();', ';window.__meterTestApi = { requestConversationDetail };})();')
+  );
+
+  await window.__meterTestApi.requestConversationDetail('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+
+  assert.equal(requested.length, 1);
+  assert.equal(requested[0].url, '/api/auth/session');
+});
+
+test('retries authentication once on 401 and does not add a generic account id header', async () => {
+  const requested = [];
+  let sessionCount = 0;
+  let detailCount = 0;
+  const detail = JSON.stringify({
+    current_node: 'message',
+    default_model_slug: 'gpt-5-6-thinking',
+    mapping: {
+      message: {
+        parent: null,
+        message: { author: { role: 'user' }, content: { parts: ['retry detail'] } }
+      }
+    }
+  });
+  const window = {
+    location: { pathname: '/', origin: 'https://chatgpt.com' },
+    fetch: async (url, options) => {
+      requested.push({ url, options });
+      if (url === '/api/auth/session') {
+        sessionCount++;
+        return new Response(JSON.stringify({ accessToken: `token-${sessionCount}`, account: { id: 'workspace-id' } }), {
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      detailCount++;
+      return new Response(detailCount === 1 ? '' : detail, {
+        status: detailCount === 1 ? 401 : 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    },
+    postMessage() {}
+  };
+  window.window = window;
+  runScript('page_script.js', { window, URL, Response, console: { log() {}, info() {}, error() {} } }, source =>
+    source.replace('})();', ';window.__meterTestApi = { requestConversationDetail };})();')
+  );
+
+  await window.__meterTestApi.requestConversationDetail('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+
+  assert.equal(sessionCount, 2);
+  assert.equal(detailCount, 2);
+  for (const request of requested.filter(item => item.url.startsWith('/backend-api/'))) {
+    assert.equal(request.options.headers['ChatGPT-Account-ID'], undefined);
+  }
 });
 
 test('extracts route ids and prefers backend model data over the UI label', () => {

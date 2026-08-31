@@ -22,9 +22,12 @@
   // Example: 'my-model-slug': 200000,
   const PERSONAL_CONTEXT_LIMIT_OVERRIDES = {};
   const CONVERSATION_REFRESH_DELAY_MS = 500;
+  const AUTH_SESSION_URL = '/api/auth/session';
   let refreshTimer = null;
   let lastRouteConversationId = null;
   let inFlightConversationId = null;
+  let sessionAuth = null;
+  let sessionAuthPromise = null;
 
   function estimateTokens(text) {
     if (!text || typeof text !== 'string') return 0;
@@ -222,6 +225,80 @@
     }
   }
 
+  function resolveChatgptAccountId(session) {
+    const candidates = [
+      session?.chatgpt_account_id,
+      session?.chatgptAccountId,
+      session?.account?.chatgpt_account_id,
+      session?.account?.chatgptAccountId
+    ];
+    return candidates.find(value => typeof value === 'string' && value.trim()) || null;
+  }
+
+  function hasHeader(headers, name) {
+    if (!headers) return false;
+    if (typeof headers.get === 'function') return Boolean(headers.get(name));
+    if (Array.isArray(headers)) return headers.some(([key]) => String(key).toLowerCase() === name.toLowerCase());
+    return Object.keys(headers).some(key => key.toLowerCase() === name.toLowerCase());
+  }
+
+  function requestAuthInfo(args) {
+    const input = args[0];
+    const headers = args[1]?.headers || input?.headers;
+    const hasAuthorization = hasHeader(headers, 'Authorization');
+    return {
+      authMode: hasAuthorization ? 'bearer' : 'none',
+      hasAccountIdHeader: hasHeader(headers, 'ChatGPT-Account-ID')
+    };
+  }
+
+  function detailRequestOptions(auth) {
+    const headers = { Authorization: `Bearer ${auth.accessToken}` };
+    if (auth.accountId) headers['ChatGPT-Account-ID'] = auth.accountId;
+    return { credentials: 'same-origin', headers };
+  }
+
+  async function getSessionAuth(refresh = false) {
+    if (refresh) sessionAuth = null;
+    if (sessionAuth?.accessToken) return sessionAuth;
+    if (sessionAuthPromise) return sessionAuthPromise;
+
+    sessionAuthPromise = originalFetch.call(window, AUTH_SESSION_URL, { credentials: 'same-origin' })
+      .then(async response => {
+        let session = null;
+        if (response.ok && (response.headers?.get('content-type') || '').includes('json')) {
+          try {
+            session = await response.json();
+          } catch (error) {
+            // Keep the session unavailable without exposing its contents.
+          }
+        }
+        const accessToken = typeof session?.accessToken === 'string' && session.accessToken.trim() ? session.accessToken : null;
+        const accountId = accessToken ? resolveChatgptAccountId(session) : null;
+        console.info?.('[ChatGPT Token Tracker] Auth session result', {
+          status: response.status,
+          hasAccessToken: Boolean(accessToken),
+          hasUsableAccountId: Boolean(accountId)
+        });
+        sessionAuth = accessToken ? { accessToken, accountId } : null;
+        return sessionAuth;
+      })
+      .catch(() => {
+        console.info?.('[ChatGPT Token Tracker] Auth session result', {
+          status: 'network-error',
+          hasAccessToken: false,
+          hasUsableAccountId: false
+        });
+        sessionAuth = null;
+        return null;
+      })
+      .finally(() => {
+        sessionAuthPromise = null;
+      });
+
+    return sessionAuthPromise;
+  }
+
   function requestKind(requestUrl, method = 'GET') {
     const pathname = safePathname(requestUrl);
     if (/\/backend-api\/conversation\/init\/?$/.test(pathname)) return 'init';
@@ -230,7 +307,7 @@
     return 'other';
   }
 
-  async function processConversationResponse(response, requestUrl, method = 'GET', kind = 'detail') {
+  async function processConversationResponse(response, requestUrl, method = 'GET', kind = 'detail', auth = { authMode: 'none', hasAccountIdHeader: false }) {
     const contentType = response.headers?.get('content-type') || '';
     let json = null;
     let parseError = false;
@@ -249,6 +326,8 @@
       pathname: safePathname(requestUrl),
       method,
       requestKind: kind,
+      authMode: auth.authMode,
+      hasAccountIdHeader: auth.hasAccountIdHeader,
       status: response.status,
       contentType,
       hasMapping,
@@ -258,25 +337,35 @@
     });
 
     if (kind === 'detail' && hasMapping) processJsonMapping(json);
-    return hasMapping;
+    return { status: response.status, hasMapping };
   }
 
-  function requestConversationDetail(conversationId) {
+  async function requestConversationDetail(conversationId) {
     if (!conversationId || inFlightConversationId === conversationId) return;
     const requestUrl = `/backend-api/conversation/${encodeURIComponent(conversationId)}`;
     inFlightConversationId = conversationId;
 
-    originalFetch.call(window, requestUrl, { credentials: 'same-origin' })
-      .then(response => processConversationResponse(response, requestUrl))
-      .catch(() => console.info?.('[ChatGPT Token Tracker] Conversation request result', {
+    try {
+      let auth = await getSessionAuth();
+      for (let attempt = 0; auth?.accessToken && attempt < 2; attempt++) {
+        const options = detailRequestOptions(auth);
+        const response = await originalFetch.call(window, requestUrl, options);
+        const result = await processConversationResponse(response, requestUrl, 'GET', 'detail', requestAuthInfo([requestUrl, options]));
+        if ((result.status !== 401 && result.status !== 403) || attempt === 1) break;
+        auth = await getSessionAuth(true);
+      }
+    } catch (error) {
+      console.info?.('[ChatGPT Token Tracker] Conversation request result', {
         pathname: requestUrl,
         method: 'GET',
         requestKind: 'detail',
-        status: 'network-error'
-      }))
-      .finally(() => {
-        if (inFlightConversationId === conversationId) inFlightConversationId = null;
+        status: 'network-error',
+        authMode: 'none',
+        hasAccountIdHeader: false
       });
+    } finally {
+      if (inFlightConversationId === conversationId) inFlightConversationId = null;
+    }
   }
 
   function scheduleConversationRefresh(conversationId = extractConversationId()) {
@@ -317,7 +406,7 @@
       const method = String(args[1]?.method || args[0]?.method || 'GET').toUpperCase();
       const kind = requestKind(targetUrl, method);
       if (kind === 'detail' || kind === 'init') {
-        processConversationResponse(response.clone(), targetUrl, method, kind);
+        processConversationResponse(response.clone(), targetUrl, method, kind, requestAuthInfo(args));
       } else if (kind === 'stream') refreshConversationAfterStream(response);
     } catch (err) {
       console.error('[ChatGPT Token Tracker] Fetch intercept error:', err);
