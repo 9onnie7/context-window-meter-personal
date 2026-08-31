@@ -5,7 +5,6 @@
   console.log('[ChatGPT Token Tracker] Injected into MAIN world context.');
 
   const MODEL_CONTEXT_LIMITS = {
-    'gpt-5-6-thinking': 200000,
     'gpt-5': 200000,
     'o1': 200000,
     'o1-preview': 128000,
@@ -16,6 +15,14 @@
     'gpt-4-turbo': 128000,
     'gpt-4': 8192,
     'gpt-3.5-turbo': 16384
+  };
+
+  // OpenAI documents 272K for ChatGPT GPT-5.6 Sol (Medium/High on eligible paid
+  // ChatGPT plans). The current gpt-5-6-thinking backend slug corresponds to
+  // GPT-5.6 Thinking/Sol. This is a documented ChatGPT product reference — not
+  // per-session runtime telemetry, and not the API's 1.05M capability window.
+  const DOCUMENTED_CHATGPT_REFERENCES = {
+    'gpt-5-6-thinking': 272000
   };
 
   // Personal-only overrides. Add a model slug and its inferred context limit here.
@@ -56,6 +63,9 @@
     if (runtimeLimit) {
       return { limit: runtimeLimit, source: 'ChatGPT runtime', confidence: 'confirmed' };
     }
+    if (Object.prototype.hasOwnProperty.call(DOCUMENTED_CHATGPT_REFERENCES, slug)) {
+      return { limit: DOCUMENTED_CHATGPT_REFERENCES[slug], source: 'documented ChatGPT reference', confidence: 'documented' };
+    }
     if (Object.prototype.hasOwnProperty.call(MODEL_CONTEXT_LIMITS, slug)) {
       return { limit: MODEL_CONTEXT_LIMITS[slug], source: 'known ChatGPT inferred', confidence: 'inferred' };
     }
@@ -65,16 +75,21 @@
     return { limit: null, source: 'unknown', confidence: 'unknown' };
   }
 
+  // Mapping-size estimate vs a reference window. When the mapping meets or
+  // exceeds the reference, the extension cannot claim live runtime usage, so
+  // percentage/left/remaining become unavailable instead of a fake 100%/0%.
   function contextMetrics(totalTokens, limit) {
     const safeTotal = Number.isFinite(totalTokens) ? Math.max(0, totalTokens) : 0;
     const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : null;
-    const usedPercent = safeLimit ? Math.min(100, (safeTotal / safeLimit) * 100) : null;
-    const remainingTokens = safeLimit ? Math.max(0, safeLimit - safeTotal) : null;
+    const referenceExceeded = safeLimit != null && safeTotal >= safeLimit;
+    const usedPercent = safeLimit != null && !referenceExceeded ? (safeTotal / safeLimit) * 100 : null;
+    const remainingTokens = safeLimit != null && !referenceExceeded ? safeLimit - safeTotal : null;
     return {
       totalTokens: safeTotal,
       limit: safeLimit,
+      referenceExceeded,
       percentage: usedPercent == null ? null : Number(usedPercent.toFixed(2)),
-      leftPercent: safeLimit ? Number(((remainingTokens / safeLimit) * 100).toFixed(2)) : null,
+      leftPercent: remainingTokens == null ? null : Number(((remainingTokens / safeLimit) * 100).toFixed(2)),
       remainingTokens
     };
   }

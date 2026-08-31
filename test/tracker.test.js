@@ -66,7 +66,7 @@ test('parses the conversation detail JSON response instead of resume SSE', async
   assert.equal(typeof usage.breakdown.system, 'number');
   assert.ok(usage.breakdown.tool > 0, 'expected tool content');
   assert.ok(usage.breakdown.thought > 0, 'expected reasoning content');
-  assert.equal(usage.limit, 200000);
+  assert.equal(usage.limit, 272000);
 });
 
 test('counts only active-branch content across conversation JSON schemas', async () => {
@@ -139,7 +139,7 @@ test('counts only active-branch content across conversation JSON schemas', async
   assert.equal(usage.breakdown.assistant, 0);
 });
 
-test('resolves override, trusted runtime, and inferred context limits without API fallback', () => {
+test('resolves override, trusted runtime, documented reference, and inferred context limits without API fallback', () => {
   const window = { fetch() {}, postMessage() {} };
   window.window = window;
   runScript('page_script.js', { window, console: { log() {}, error() {} } }, source => source
@@ -156,10 +156,18 @@ test('resolves override, trusted runtime, and inferred context limits without AP
     limit: 180000, source: 'ChatGPT runtime', confidence: 'confirmed'
   }));
   assert.equal(resolve('gpt-5-6-thinking'), JSON.stringify({
-    limit: 200000, source: 'known ChatGPT inferred', confidence: 'inferred'
+    limit: 272000, source: 'documented ChatGPT reference', confidence: 'documented'
   }));
+  // The API's 1.05M capability window must never become the ChatGPT Web
+  // reference: an outputTokens field (API-style) is ignored, and only a
+  // matching runtime contextWindowTokens would ever be trusted.
   assert.equal(resolve('gpt-5-6-thinking', { modelSlug: 'gpt-5-6-thinking', outputTokens: 1050000 }), JSON.stringify({
-    limit: 200000, source: 'known ChatGPT inferred', confidence: 'inferred'
+    limit: 272000, source: 'documented ChatGPT reference', confidence: 'documented'
+  }));
+  // A matching trusted runtime context-window value still wins over the
+  // documented reference (priority preserved); the API value is never used.
+  assert.equal(resolve('gpt-5-6-thinking', { modelSlug: 'gpt-5-6-thinking', contextWindowTokens: 180000 }), JSON.stringify({
+    limit: 180000, source: 'ChatGPT runtime', confidence: 'confirmed'
   }));
   assert.equal(resolve('gpt-4o', { modelSlug: 'other-model', contextWindowTokens: 999999 }), JSON.stringify({
     limit: 128000, source: 'known ChatGPT inferred', confidence: 'inferred'
@@ -170,17 +178,67 @@ test('resolves override, trusted runtime, and inferred context limits without AP
   assert.equal(JSON.stringify(window.__meterTestApi.contextMetrics(250, 100)), JSON.stringify({
     totalTokens: 250,
     limit: 100,
-    percentage: 100,
-    leftPercent: 0,
-    remainingTokens: 0
-  }));
-  assert.equal(JSON.stringify(window.__meterTestApi.contextMetrics(NaN, 0)), JSON.stringify({
-    totalTokens: 0,
-    limit: null,
+    referenceExceeded: true,
     percentage: null,
     leftPercent: null,
     remainingTokens: null
   }));
+  assert.equal(JSON.stringify(window.__meterTestApi.contextMetrics(NaN, 0)), JSON.stringify({
+    totalTokens: 0,
+    limit: null,
+    referenceExceeded: false,
+    percentage: null,
+    leftPercent: null,
+    remainingTokens: null
+  }));
+});
+
+test('computes reference ratios below the reference window and overflows at or above it', () => {
+  const window = { fetch() {}, postMessage() {} };
+  window.window = window;
+  runScript('page_script.js', { window, console: { log() {}, error() {} } }, source =>
+    source.replace('})();', ';window.__meterTestApi = { contextMetrics };})();')
+  );
+
+  const m = (...args) => JSON.stringify(window.__meterTestApi.contextMetrics(...args));
+
+  // Normal below-reference case: 136000 / 272000 -> 50% of reference, 50% ref. left.
+  assert.equal(m(136000, 272000), JSON.stringify({
+    totalTokens: 136000,
+    limit: 272000,
+    referenceExceeded: false,
+    percentage: 50,
+    leftPercent: 50,
+    remainingTokens: 136000
+  }));
+
+  // Boundary just below the reference window remains a normal ratio.
+  // (99.9996% rounds to 100 at two decimals, but the state is still
+  // reference — not overflow — and a positive remainder exists.)
+  assert.equal(JSON.parse(m(271999, 272000)).referenceExceeded, false);
+  assert.equal(JSON.parse(m(271999, 272000)).percentage, 100);
+  assert.equal(JSON.parse(m(271999, 272000)).remainingTokens, 1);
+
+  // Exactly at the reference window -> overflow, no fake 0% left.
+  assert.equal(JSON.parse(m(272000, 272000)).referenceExceeded, true);
+  assert.equal(JSON.parse(m(272000, 272000)).percentage, null);
+  assert.equal(JSON.parse(m(272000, 272000)).leftPercent, null);
+  assert.equal(JSON.parse(m(272000, 272000)).remainingTokens, null);
+
+  // Slightly above the reference window -> overflow.
+  assert.equal(JSON.parse(m(272001, 272000)).referenceExceeded, true);
+  assert.equal(JSON.parse(m(272001, 272000)).percentage, null);
+  assert.equal(JSON.parse(m(272001, 272000)).leftPercent, null);
+  assert.equal(JSON.parse(m(272001, 272000)).remainingTokens, null);
+
+  // Real-world observed mapping sizes (synthetic numbers only).
+  assert.equal(JSON.parse(m(289254, 272000)).referenceExceeded, true);
+  assert.equal(JSON.parse(m(289254, 272000)).percentage, null);
+  assert.equal(JSON.parse(m(289254, 272000)).leftPercent, null);
+  assert.equal(JSON.parse(m(505729, 272000)).referenceExceeded, true);
+  assert.equal(JSON.parse(m(505729, 272000)).percentage, null);
+  assert.equal(JSON.parse(m(505729, 272000)).leftPercent, null);
+  assert.equal(JSON.parse(m(505729, 272000)).remainingTokens, null);
 });
 
 test('uses full-mapping wording and keeps tool diagnostics disabled by default', () => {
@@ -489,15 +547,104 @@ test('uses the intended context guard boundaries', () => {
     MutationObserver: class {},
     Intl,
     console: { log() {} }
-  }, source => source.replace('})();', ';window.__meterTestApi = { guardMessage, getStateColor };})();'));
+  }, source => source.replace('})();', ';window.__meterTestApi = { guardMessage, getStateColor, contextState, contextWarning };})();'));
 
-  const { guardMessage } = window.__meterTestApi;
+  const { guardMessage, contextState, contextWarning } = window.__meterTestApi;
+
+  // Below-reference boundaries keep the 35/25/15 thresholds with reference wording.
   assert.equal(guardMessage(36), '');
-  assert.equal(guardMessage(35), 'Consider wrapping up this phase');
-  assert.equal(guardMessage(26), 'Consider wrapping up this phase');
-  assert.equal(guardMessage(25), 'New chat recommended');
-  assert.equal(guardMessage(16), 'New chat recommended');
-  assert.equal(guardMessage(15), 'High context pressure');
+  assert.equal(guardMessage(35), 'Mapping nearing reference window');
+  assert.equal(guardMessage(26), 'Mapping nearing reference window');
+  assert.equal(guardMessage(25), 'Consider starting a new chat');
+  assert.equal(guardMessage(16), 'Consider starting a new chat');
+  assert.equal(guardMessage(15), 'Mapping very near reference window');
+
+  // Mapping at/above the reference window must never produce the old
+  // "High context pressure" or a fake 0%-left pressure state.
+  for (const mapping of [272000, 289254, 505729]) {
+    const overflowData = {
+      totalTokens: mapping,
+      limit: 272000,
+      referenceExceeded: true,
+      percentage: null,
+      leftPercent: null,
+      remainingTokens: null
+    };
+    assert.equal(contextState(overflowData), 'overflow');
+    assert.equal(contextWarning(overflowData), 'Mapping exceeds reference');
+    assert.doesNotMatch(contextWarning(overflowData), /High context pressure/);
+  }
+
+  const belowData = {
+    totalTokens: 136000,
+    limit: 272000,
+    referenceExceeded: false,
+    percentage: 50,
+    leftPercent: 50,
+    remainingTokens: 136000
+  };
+  assert.equal(contextState(belowData), 'reference');
+  assert.equal(contextWarning(belowData), '');
+});
+
+test('badge shows reference and overflow states without fake remaining percentages', () => {
+  const elements = {};
+  const makeStub = id => ({ id, innerText: '', setAttribute() {}, classList: { add() {}, remove() {} } });
+  const document = {
+    body: new FakeElement('body'),
+    readyState: 'complete',
+    createElement: tagName => new FakeElement(tagName),
+    getElementById: id => elements[id] || (elements[id] = makeStub(id)),
+    addEventListener() {},
+    querySelectorAll: () => [],
+    querySelector: () => null
+  };
+  const window = { addEventListener() {} };
+  window.window = window;
+  runScript('content.js', {
+    window,
+    document,
+    MutationObserver: class { observe() {} },
+    Intl,
+    console: { log() {} }
+  }, source => source.replace('})();', ';window.__meterTestApi = { updateWidgetUI };})();'));
+
+  // Below-reference state: the badge shows a reference percentage, not "used".
+  window.__meterTestApi.updateWidgetUI({
+    totalTokens: 136000,
+    limit: 272000,
+    referenceExceeded: false,
+    percentage: 50,
+    leftPercent: 50,
+    remainingTokens: 136000,
+    modelSlug: 'gpt-5-6-thinking',
+    modelSource: 'backend',
+    limitSource: 'documented ChatGPT reference',
+    limitConfidence: 'documented',
+    dataSource: 'backend',
+    breakdown: { user: 10000, assistant: 10000, tool: 10000, thought: 10000, system: 10000 }
+  });
+  assert.equal(elements['gpt-token-count-text'].innerText, 'Ref. 50% left');
+  assert.doesNotMatch(elements['gpt-token-count-text'].innerText, /used/);
+
+  // Overflow state: no fake 0% left, no fake 100% used.
+  window.__meterTestApi.updateWidgetUI({
+    totalTokens: 505729,
+    limit: 272000,
+    referenceExceeded: true,
+    percentage: null,
+    leftPercent: null,
+    remainingTokens: null,
+    modelSlug: 'gpt-5-6-thinking',
+    modelSource: 'backend',
+    limitSource: 'documented ChatGPT reference',
+    limitConfidence: 'documented',
+    dataSource: 'backend',
+    breakdown: { user: 10000, assistant: 10000, tool: 10000, thought: 10000, system: 10000 }
+  });
+  assert.equal(elements['gpt-token-count-text'].innerText, 'Mapping > ref');
+  assert.notEqual(elements['gpt-token-count-text'].innerText, '0% left');
+  assert.notEqual(elements['gpt-token-pct-text'].innerText, '0%');
 });
 
 class FakeElement {

@@ -2,7 +2,7 @@
 
 Personal enhanced fork of [joostmbakker/context-window-meter](https://github.com/joostmbakker/context-window-meter), under the original MIT license. It is a Manifest V3 Chrome extension that shows estimated ChatGPT context usage locally in the current tab.
 
-The primary badge shows **Context XX% left**. Click it for estimated used/left tokens, detected model, context-limit provenance, and category breakdown. These values are estimates from the active conversation mapping and inferred model limits; they are not OpenAI's backend token accounting.
+The primary badge shows **Context XX% left** against the model's reference window. Click it for the estimated mapping size, reference percentage, detected model, context-limit provenance, and category breakdown. These values are estimates from the active conversation mapping and model references; they are not OpenAI's runtime token accounting.
 
 > Independent project — not affiliated with, endorsed by, or sponsored by OpenAI. "ChatGPT" is a trademark of OpenAI.
 
@@ -15,7 +15,7 @@ ChatGPT gives you no indication of how full the context window is. You find out 
 - Context-left badge and compact estimated-context panel
 - Context guard at 35%, 25%, and 15% left (no notifications or blocking)
 - Static personal model-limit overrides in `page_script.js`
-- Known model limits are labelled as inferred unless an explicitly matched ChatGPT runtime context-window value is available
+- Known model limits are labelled with their provenance — inferred unless an explicitly matched ChatGPT runtime context-window value or a documented ChatGPT reference is available
 - One debounced same-origin conversation refresh on normal, Project, and Custom GPT conversation routes
 - Ephemeral same-origin session auth for the conversation-detail request; credentials stay in page memory
 - Backend model-slug detection with a read-only UI label fallback
@@ -43,6 +43,28 @@ const PERSONAL_CONTEXT_LIMIT_OVERRIDES = {
 3. Enable **Developer mode** (top-right).
 4. Click **Load unpacked** and select the repository root.
 5. Open any conversation on `https://chatgpt.com/`.
+
+## Mapping size vs runtime context
+
+The meter estimates countable content persisted in ChatGPT's active conversation
+mapping. ChatGPT may manage long conversations server-side before constructing
+the model's next-turn context — truncation, compaction, summarization, selective
+history inclusion, hidden system context, output reservations, and transient
+tool context all happen outside the browser.
+
+**Mapping size is not live runtime context usage.** A conversation mapping may
+therefore exceed the model's documented reference window while the conversation
+remains usable. When the mapping meets or exceeds the reference, the extension
+reports that the mapping exceeds the reference window and stops presenting a
+remaining-context percentage, because actual runtime usage is not observable.
+
+### GPT-5.6 Thinking reference
+
+GPT-5.6 Thinking currently uses a **272K documented ChatGPT Sol reference**
+(OpenAI documents 272K for GPT-5.6 Sol; paid ChatGPT Medium/High uses Sol). This
+is a documented ChatGPT product reference, **not** a per-session runtime limit
+and **not** the GPT-5.6 Sol API's 1.05M context window, which is API capability
+and is deliberately not used as the ChatGPT Web reference.
 
 ## How it works
 
@@ -78,10 +100,18 @@ for s in 16 48 128; do rsvg-convert -w $s -h $s icons/icon.svg -o icons/icon$s.p
 
 - Token counts and context limits are **estimates**; they are not OpenAI backend accounting.
 - "Full mapping" means the complete **active** conversation mapping was available to the extension. It does not mean exact OpenAI runtime token accounting, access to hidden server context, hidden system prompts, or transient tool context.
+- Mapping size and live runtime context usage are different things. Below the reference window the badge shows a reference ratio; at or above it the extension shows "Mapping > ref" and no percentage, because runtime usage is not observable.
 - Tool/search usage reflects only countable tool content persisted in the active conversation mapping. Some ChatGPT tool executions may retain structural tool nodes without persisted text and can therefore contribute zero estimated tokens; this is not an extension bug.
 - DOM fallback is partial and may exclude history unloaded by ChatGPT. Unknown models and limits remain visibly unknown.
 - The extension depends on ChatGPT's internal response shape, which OpenAI can change without notice. If the badge stops updating, that is the likely cause.
-- Context limits are inferred from the model slug unless an explicitly matched ChatGPT runtime context-window value is available; they may lag behind new model releases.
+- Context limits are inferred from the model slug unless an explicitly matched ChatGPT runtime context-window value or a documented ChatGPT reference is available; they may lag behind new model releases.
+
+## References
+
+- [GPT-5.6 in ChatGPT](https://help.openai.com/en/articles/20001354) — GPT-5.6 Sol powers Medium and High on eligible paid ChatGPT plans, including Plus.
+- [ChatGPT Business — Models & Limits](https://help.openai.com/en/articles/12003714) — GPT-5.6 Luna: 128K, GPT-5.6 Terra: 128K, GPT-5.6 Sol: 272K.
+- [ChatGPT Rate Card](https://help.openai.com/en/articles/11481834) — defines >272K input tokens as long context for supported GPT-5.x usage; long context is available in Work/Codex, not the Chat tab.
+- GPT-5.6 Sol API model page — API context window of 1.05M; deliberately not used as the ChatGPT Web reference.
 
 ## License
 

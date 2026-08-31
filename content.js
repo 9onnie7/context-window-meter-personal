@@ -42,10 +42,12 @@
     return 'var(--gtu-crit)';
   }
 
+  // Reference-based suggestions derived from mapping size vs the model's
+  // reference window — not claims about live runtime-context usage.
   function guardMessage(leftPercent) {
-    if (leftPercent <= 15) return 'High context pressure';
-    if (leftPercent <= 25) return 'New chat recommended';
-    if (leftPercent <= 35) return 'Consider wrapping up this phase';
+    if (leftPercent <= 15) return 'Mapping very near reference window';
+    if (leftPercent <= 25) return 'Consider starting a new chat';
+    if (leftPercent <= 35) return 'Mapping nearing reference window';
     return '';
   }
 
@@ -54,7 +56,18 @@
       Number.isFinite(data.percentage) && Number.isFinite(data.leftPercent);
   }
 
+  // 'reference': mapping below the reference window, ratio available.
+  // 'overflow':  mapping meets/exceeds the reference window; live runtime
+  //              usage is not observable, so no fake 100%/0% is shown.
+  // 'unknown':   no reference window known.
+  function contextState(data) {
+    if (data?.referenceExceeded === true && Number.isFinite(data?.limit) && data.limit > 0) return 'overflow';
+    if (hasKnownContext(data)) return 'reference';
+    return 'unknown';
+  }
+
   function contextWarning(data) {
+    if (contextState(data) === 'overflow') return 'Mapping exceeds reference';
     return hasKnownContext(data) ? guardMessage(data.leftPercent) : '';
   }
 
@@ -232,28 +245,35 @@
     const ringPath = document.getElementById('gpt-token-ring-path');
     const pctText = document.getElementById('gpt-token-pct-text');
     const countText = document.getElementById('gpt-token-count-text');
-    const knownContext = hasKnownContext(currentData);
-    const leftPercent = knownContext ? Math.max(0, Math.min(100, currentData.leftPercent)) : null;
-    const color = knownContext ? getStateColor(leftPercent) : 'var(--gtu-text-3)';
+    const state = contextState(currentData);
+    const leftPercent = state === 'reference' ? Math.max(0, Math.min(100, currentData.leftPercent)) : null;
+    const color = state === 'reference' ? getStateColor(leftPercent) : 'var(--gtu-text-3)';
 
     if (ringPath) {
-      ringPath.setAttribute('stroke-dasharray', `${leftPercent || 0}, 100`);
+      const dash = state === 'reference' ? leftPercent : 0;
+      ringPath.setAttribute('stroke-dasharray', `${dash}, 100`);
       ringPath.setAttribute('stroke', color);
     }
 
     if (pctText) {
-      pctText.innerText = knownContext ? `${Math.round(leftPercent)}%` : '—';
+      pctText.innerText = state === 'reference' ? `${Math.round(leftPercent)}%` : '—';
     }
 
     if (countText) {
-      countText.innerText = knownContext ? `${Math.round(leftPercent)}% left` : `~${formatNumber(currentData.totalTokens)} tokens`;
+      if (state === 'reference') countText.innerText = `Ref. ${Math.round(leftPercent)}% left`;
+      else if (state === 'overflow') countText.innerText = 'Mapping > ref';
+      else countText.innerText = `~${formatNumber(currentData.totalTokens)} tokens`;
     }
 
+    const overflowTitle = 'The persisted active conversation mapping exceeds the reference window. Actual runtime context usage is not observable.';
+    widgetContainer.setAttribute('title', state === 'overflow' ? overflowTitle : 'Context window usage');
     widgetContainer.setAttribute(
       'aria-label',
-      knownContext
-        ? `Estimated context: ${Math.round(leftPercent)} percent left, ${Math.round(currentData.percentage)} percent used.`
-        : `Partial DOM estimate: ${formatNumber(currentData.totalTokens)} estimated tokens. Context limit unknown.`
+      state === 'reference'
+        ? `Estimated context: ${Math.round(leftPercent)} percent of reference left, ${Math.round(currentData.percentage)} percent of reference used.`
+        : state === 'overflow'
+          ? overflowTitle
+          : `Partial DOM estimate: ${formatNumber(currentData.totalTokens)} estimated tokens. Context limit unknown.`
     );
 
     if (isCardOpen) {
@@ -315,12 +335,8 @@
       return;
     }
 
-    const knownContext = hasKnownContext(currentData);
-    const leftPercent = knownContext ? Math.max(0, Math.min(100, currentData.leftPercent)) : null;
-    const color = knownContext ? getStateColor(leftPercent) : 'var(--gtu-text)';
+    const state = contextState(currentData);
     const breakdown = currentData.breakdown || {};
-    const remainingTokens = knownContext ? Math.max(0, currentData.remainingTokens) : null;
-    const warning = contextWarning(currentData);
     const modelName = currentData.modelDisplayName || currentData.modelSlug || 'Unknown';
     const footer = currentData.dataSource === 'dom'
       ? 'Partial DOM estimate · may exclude unloaded history'
@@ -329,32 +345,64 @@
       ? 'Token usage is estimated from visible DOM content only.'
       : `Token usage is estimated from the full active mapping. Limit: ${currentData.limitConfidence || 'unknown'}.`;
 
+    let headline;
+    let sub;
+    let guardHtml = '';
+    let barHtml = '';
+
+    if (state === 'overflow') {
+      headline = `
+        <div class="gpt-token-headline">
+          <span class="gpt-token-headline-pct">~${formatNumber(currentData.totalTokens)}</span>
+          <span class="gpt-token-headline-note">mapping tokens</span>
+        </div>
+      `;
+      sub = `
+        <div class="gpt-token-headline-sub">Reference window: ${formatNumber(currentData.limit)}</div>
+        <div class="gpt-token-headline-sub">Runtime context unavailable</div>
+      `;
+      guardHtml = `<div class="gpt-token-guard" style="color: var(--gtu-text-2);">Mapping exceeds reference window</div>`;
+    } else if (state === 'reference') {
+      const leftPercent = Math.max(0, Math.min(100, currentData.leftPercent));
+      const color = getStateColor(leftPercent);
+      const remainingTokens = Math.max(0, currentData.remainingTokens);
+      const warning = contextWarning(currentData);
+      headline = `
+        <div class="gpt-token-headline">
+          <span class="gpt-token-headline-pct" style="color: ${color};">${Math.round(currentData.percentage)}%</span>
+          <span class="gpt-token-headline-note">of reference</span>
+        </div>
+      `;
+      sub = `
+        <div class="gpt-token-headline-sub">
+          ~${formatNumber(currentData.totalTokens)} mapping tokens · ${formatNumber(currentData.limit)} reference
+        </div>
+        <div class="gpt-token-headline-sub">
+          ${formatNumber(remainingTokens)} tokens to reference · ${Math.round(leftPercent)}% ref. left
+        </div>
+      `;
+      if (warning) guardHtml = `<div class="gpt-token-guard" style="color: ${color};">${warning}</div>`;
+      barHtml = `<div class="gpt-token-bar">${renderSegments(breakdown, currentData.limit)}</div>`;
+    } else {
+      headline = `
+        <div class="gpt-token-headline">
+          <span class="gpt-token-headline-pct">~${formatNumber(currentData.totalTokens)}</span>
+          <span class="gpt-token-headline-note">tokens</span>
+        </div>
+      `;
+      sub = `<div class="gpt-token-headline-sub">Context limit unknown · percentage unavailable</div>`;
+    }
+
     detailsCard.innerHTML = `
       <div class="gpt-token-card-head">
         <span class="gpt-token-card-title">Estimated context</span>
         <span class="gpt-token-model">${escapeHtml(modelName)}</span>
       </div>
 
-      ${knownContext ? `
-        <div class="gpt-token-headline">
-          <span class="gpt-token-headline-pct" style="color: ${color};">${Math.round(currentData.percentage)}%</span>
-          <span class="gpt-token-headline-note">used</span>
-        </div>
-        <div class="gpt-token-headline-sub">
-          ${formatNumber(currentData.totalTokens)} / ${formatNumber(currentData.limit)} estimated tokens<br>
-          ${formatNumber(remainingTokens)} estimated tokens left · ${Math.round(leftPercent)}% left
-        </div>
-      ` : `
-        <div class="gpt-token-headline">
-          <span class="gpt-token-headline-pct">~${formatNumber(currentData.totalTokens)}</span>
-          <span class="gpt-token-headline-note">tokens</span>
-        </div>
-        <div class="gpt-token-headline-sub">Context limit unknown · percentage unavailable</div>
-      `}
-
-      ${warning ? `<div class="gpt-token-guard" style="color: ${color};">${warning}</div>` : ''}
-
-      ${knownContext ? `<div class="gpt-token-bar">${renderSegments(breakdown, currentData.limit)}</div>` : ''}
+      ${headline}
+      ${sub}
+      ${guardHtml}
+      ${barHtml}
 
       <div class="gpt-token-legend">
         <div class="gpt-token-legend-title">What is filling it</div>
