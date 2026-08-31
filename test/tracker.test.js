@@ -226,12 +226,12 @@ test('refreshes the active conversation once after a reply stream finishes', asy
   runScript('page_script.js', { window, Response, setTimeout, clearTimeout, console: { log() {}, error() {} } });
 
   const submission = window.fetch('/backend-api/f/conversation');
-  window.location.pathname = '/c/conversation-id';
+  window.location.pathname = '/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   await submission;
   await new Promise(resolve => setTimeout(resolve, 600));
 
-  assert.ok(requestedUrls.includes('/backend-api/conversation/conversation-id'));
-  assert.equal(requestedUrls.filter(url => url === '/backend-api/conversation/conversation-id').length, 1);
+  assert.ok(requestedUrls.includes('/backend-api/conversation/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'));
+  assert.equal(requestedUrls.filter(url => url === '/backend-api/conversation/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee').length, 1);
   assert.ok(updates.at(-1), 'the refreshed detail should produce a usage update');
 });
 
@@ -248,7 +248,7 @@ test('fetches one same-origin detail response on an initial conversation route',
     }
   });
   const window = {
-    location: { pathname: '/c/initial-id', origin: 'https://chatgpt.com' },
+    location: { pathname: '/g/g-p-xxxxxxxx-project/c/11111111-2222-3333-4444-555555555555', origin: 'https://chatgpt.com' },
     history: {
       pushState() {},
       replaceState() {}
@@ -263,20 +263,21 @@ test('fetches one same-origin detail response on an initial conversation route',
   window.window = window;
   runScript('page_script.js', { window, URL, Response, setTimeout, clearTimeout, console: { log() {}, info() {}, error() {} } });
 
-  window.history.replaceState({}, '', '/c/initial-id');
+  window.history.replaceState({}, '', '/g/g-p-xxxxxxxx-project/c/11111111-2222-3333-4444-555555555555');
   await new Promise(resolve => setTimeout(resolve, 600));
 
-  const detailRequests = requested.filter(item => item.url === '/backend-api/conversation/initial-id');
+  const detailRequests = requested.filter(item => item.url === '/backend-api/conversation/11111111-2222-3333-4444-555555555555');
   assert.equal(detailRequests.length, 1);
   assert.equal(detailRequests[0].options.credentials, 'same-origin');
 });
 
 test('extracts route ids and prefers backend model data over the UI label', () => {
   let showModel = true;
+  let modelAria = 'Model: GPT-5.6 Thinking';
   const modelElement = {
-    innerText: 'Thinking',
+    get innerText() { return modelAria ? 'Thinking' : '高'; },
     getAttribute(name) {
-      if (name === 'aria-label') return 'Model: GPT-5.6 Thinking';
+      if (name === 'aria-label') return modelAria;
       return null;
     }
   };
@@ -301,6 +302,9 @@ test('extracts route ids and prefers backend model data over the UI label', () =
   showModel = false;
   assert.equal(window.__meterTestApi.detectUiModel().modelDisplayName, 'Unknown');
   showModel = true;
+  modelAria = null;
+  assert.equal(window.__meterTestApi.detectUiModel().modelDisplayName, 'Unknown');
+  modelAria = 'Model: GPT-5.6 Thinking';
   const backend = window.__meterTestApi.withModelFallback({ modelSlug: 'backend-model', modelSource: 'backend' });
   assert.equal(backend.modelDisplayName, 'backend-model');
   assert.equal(backend.modelSource, 'backend');
@@ -314,15 +318,21 @@ test('extracts route ids and prefers backend model data over the UI label', () =
   const pageWindow = {
     fetch() {},
     postMessage() {},
-    location: { pathname: '/c/route-conversation-id' }
+    location: { pathname: '/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', origin: 'https://chatgpt.com' }
   };
   pageWindow.window = pageWindow;
-  runScript('page_script.js', { window: pageWindow, console: { log() {}, info() {}, error() {} } }, source =>
-    source.replace('})();', ';window.__meterTestApi = { currentConversationId };})();')
+  runScript('page_script.js', { window: pageWindow, URL, console: { log() {}, info() {}, error() {} } }, source =>
+    source.replace('})();', ';window.__meterTestApi = { extractConversationId, requestKind };})();')
   );
-  assert.equal(pageWindow.__meterTestApi.currentConversationId(), 'route-conversation-id');
-  pageWindow.location.pathname = '/';
-  assert.equal(pageWindow.__meterTestApi.currentConversationId(), null);
+  const { extractConversationId, requestKind } = pageWindow.__meterTestApi;
+  assert.equal(extractConversationId(), 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  assert.equal(extractConversationId('/g/g-p-xxxxxxxx-project/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'), 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  assert.equal(extractConversationId('/g/g-xxxxxxxx-custom/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'), 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  assert.equal(extractConversationId('/g/g-p-xxxxxxxx-project'), null);
+  assert.equal(extractConversationId('/g/g-p-xxxxxxxx-project/project'), null);
+  assert.equal(extractConversationId('/g/g-p-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-project'), null);
+  assert.equal(requestKind('/backend-api/conversation/init', 'POST'), 'init');
+  assert.equal(requestKind('/backend-api/conversation/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'GET'), 'detail');
 });
 
 test('uses the intended context guard boundaries', () => {

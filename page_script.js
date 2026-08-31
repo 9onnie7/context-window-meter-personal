@@ -204,8 +204,14 @@
     return /^(?:https?:\/\/[^/]+)?\/backend-api\/(?:f\/)?conversation\/?(?:[?#].*)?$/.test(url || '');
   }
 
-  function currentConversationId() {
-    return window.location?.pathname.match(/^\/c\/([^/?#]+)/)?.[1] || null;
+  function extractConversationId(pathname = window.location?.pathname) {
+    const segments = String(pathname || '').split('/').filter(Boolean);
+    for (let index = 0; index < segments.length - 1; index++) {
+      if (segments[index] === 'c' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(segments[index + 1])) {
+        return segments[index + 1];
+      }
+    }
+    return null;
   }
 
   function safePathname(url) {
@@ -216,7 +222,15 @@
     }
   }
 
-  async function processDetailResponse(response, requestUrl, method = 'GET') {
+  function requestKind(requestUrl, method = 'GET') {
+    const pathname = safePathname(requestUrl);
+    if (/\/backend-api\/conversation\/init\/?$/.test(pathname)) return 'init';
+    if (method === 'GET' && isConversationDetail(requestUrl)) return 'detail';
+    if (isConversationSubmission(requestUrl)) return 'stream';
+    return 'other';
+  }
+
+  async function processConversationResponse(response, requestUrl, method = 'GET', kind = 'detail') {
     const contentType = response.headers?.get('content-type') || '';
     let json = null;
     let parseError = false;
@@ -231,9 +245,10 @@
 
     const hasMapping = Boolean(json?.mapping && typeof json.mapping === 'object');
     const modelSlug = json?.default_model_slug || null;
-    console.info?.('[ChatGPT Token Tracker] Conversation detail result', {
+    console.info?.('[ChatGPT Token Tracker] Conversation request result', {
       pathname: safePathname(requestUrl),
       method,
+      requestKind: kind,
       status: response.status,
       contentType,
       hasMapping,
@@ -242,7 +257,7 @@
       parseError
     });
 
-    if (hasMapping) processJsonMapping(json);
+    if (kind === 'detail' && hasMapping) processJsonMapping(json);
     return hasMapping;
   }
 
@@ -252,10 +267,11 @@
     inFlightConversationId = conversationId;
 
     originalFetch.call(window, requestUrl, { credentials: 'same-origin' })
-      .then(response => processDetailResponse(response, requestUrl))
-      .catch(() => console.info?.('[ChatGPT Token Tracker] Conversation detail result', {
+      .then(response => processConversationResponse(response, requestUrl))
+      .catch(() => console.info?.('[ChatGPT Token Tracker] Conversation request result', {
         pathname: requestUrl,
         method: 'GET',
+        requestKind: 'detail',
         status: 'network-error'
       }))
       .finally(() => {
@@ -263,7 +279,7 @@
       });
   }
 
-  function scheduleConversationRefresh(conversationId = currentConversationId()) {
+  function scheduleConversationRefresh(conversationId = extractConversationId()) {
     if (!conversationId || typeof setTimeout !== 'function') return;
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
@@ -273,7 +289,7 @@
   }
 
   function handleRouteChange() {
-    const conversationId = currentConversationId();
+    const conversationId = extractConversationId();
     if (conversationId === lastRouteConversationId) return;
     lastRouteConversationId = conversationId;
     if (conversationId) scheduleConversationRefresh(conversationId);
@@ -284,7 +300,7 @@
     const reader = response.clone().body.getReader();
     const drain = () => reader.read().then(({ done }) => {
       if (!done) return drain();
-      const conversationId = currentConversationId();
+      const conversationId = extractConversationId();
       if (!conversationId) return;
       scheduleConversationRefresh(conversationId);
     }).catch(() => {});
@@ -298,10 +314,11 @@
 
     try {
       const targetUrl = response.url || (typeof args[0] === 'string' ? args[0] : args[0]?.url || '');
-      if (isConversationDetail(targetUrl)) {
-        const method = String(args[1]?.method || args[0]?.method || 'GET').toUpperCase();
-        processDetailResponse(response.clone(), targetUrl, method);
-      } else if (isConversationSubmission(targetUrl)) refreshConversationAfterStream(response);
+      const method = String(args[1]?.method || args[0]?.method || 'GET').toUpperCase();
+      const kind = requestKind(targetUrl, method);
+      if (kind === 'detail' || kind === 'init') {
+        processConversationResponse(response.clone(), targetUrl, method, kind);
+      } else if (kind === 'stream') refreshConversationAfterStream(response);
     } catch (err) {
       console.error('[ChatGPT Token Tracker] Fetch intercept error:', err);
     }

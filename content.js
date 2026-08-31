@@ -67,6 +67,7 @@
     const described = label.match(/(?:current model(?:\s+is)?|model)\s*(?:[:,-]\s*|\bis\s+)(.+)$/i);
     if (described) label = described[1].trim();
     if (!label || label.length > 80 || /^(?:choose|select|switch)\s+(?:a\s+)?model$/i.test(label) || /^model(?: selector)?$/i.test(label)) return null;
+    if (/^(?:auto|automatic|high|medium|low|advanced|very high|高|中|低|自动|高级|超高)$/i.test(label)) return null;
     return label;
   }
 

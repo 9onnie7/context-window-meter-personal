@@ -15,7 +15,7 @@ ChatGPT gives you no indication of how full the context window is. You find out 
 - Context-left badge and compact estimated-context panel
 - Context guard at 35%, 25%, and 15% left (no notifications or blocking)
 - Static personal model-limit overrides in `page_script.js`
-- One debounced same-origin conversation refresh on initial/SPA routes and after a reply stream finishes
+- One debounced same-origin conversation refresh on normal, Project, and Custom GPT conversation routes
 - Honest partial-DOM mode when full conversation data or its model limit is unavailable
 
 Everything runs locally in the tab. No data leaves your browser, nothing is stored, and the extension can only access `chatgpt.com`. See the [privacy policy](PRIVACY.md).
