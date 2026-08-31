@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Context Window Meter for ChatGPT",
-  "version": "1.0.1",
-  "description": "See how much of the model's context window your ChatGPT conversation is using, in real time. Not affiliated with OpenAI.",
+  "name": "Context Window Meter Personal",
+  "version": "1.1.0",
+  "description": "Personal enhanced fork for estimated ChatGPT context usage.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -36,7 +36,7 @@
     }
   ],
   "action": {
-    "default_title": "Context Window Meter for ChatGPT",
+    "default_title": "Context Window Meter Personal",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

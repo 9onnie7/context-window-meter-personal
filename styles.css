@@ -26,6 +26,7 @@
   /* Fill state of the window as a whole. */
   --gtu-ok: #10a37f;
   --gtu-warn: #c98a12;
+  --gtu-pressure: #d66a14;
   --gtu-crit: #e02e2a;
 
   /* One hue per content category. Assistant text is usually the bulk of a
@@ -66,6 +67,7 @@
     --gtu-skeleton-sheen: rgba(255, 255, 255, 0.17);
     --gtu-ok: #19c37d;
     --gtu-warn: #e0a83a;
+    --gtu-pressure: #f08a32;
     --gtu-crit: #ff6b63;
     --gtu-cat-user: #19c37d;
     --gtu-cat-assistant: #9ba1aa;
@@ -296,6 +298,12 @@
   font-size: 12px;
   color: var(--gtu-text-2);
   font-variant-numeric: tabular-nums;
+}
+
+.gpt-token-guard {
+  margin-top: 0.625rem;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* Signature element: the window drawn once, split by what is filling it. */

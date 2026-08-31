@@ -1,8 +1,8 @@
-# Context Window Meter for ChatGPT
+# Context Window Meter Personal
 
-A Chrome extension (Manifest V3) that shows, in real time, how much of the model's context window your ChatGPT conversation is actually using — total tokens, the model's limit, the percentage, and a breakdown of what is filling it.
+Personal enhanced fork of [joostmbakker/context-window-meter](https://github.com/joostmbakker/context-window-meter), under the original MIT license. It is a Manifest V3 Chrome extension that shows estimated ChatGPT context usage locally in the current tab.
 
-Everything runs locally in the tab. No data leaves your browser, nothing is stored, and the extension can only access `chatgpt.com`. See the [privacy policy](PRIVACY.md).
+The primary badge shows **Context XX% left**. Click it for estimated used/left tokens, detected model, context-limit source, and category breakdown. These values are estimates from visible conversation data and inferred model limits; they are not OpenAI's backend token accounting.
 
 > Independent project — not affiliated with, endorsed by, or sponsored by OpenAI. "ChatGPT" is a trademark of OpenAI.
 
@@ -10,19 +10,26 @@ Everything runs locally in the tab. No data leaves your browser, nothing is stor
 
 ChatGPT gives you no indication of how full the context window is. You find out by hitting the limit: the model starts forgetting the top of the conversation, or silently truncates a long document you pasted. This puts a number on it before that happens — and shows *which* part of the conversation is eating the budget, which is usually not the part you'd guess.
 
-## Features
+## Personal fork additions
 
-- **Live token count** against the active model's context limit, as a percentage
-- **Category breakdown** — your messages, ChatGPT's replies, tool and search results, reasoning traces, and system instructions
-- **Follows ChatGPT's own theme** — inherits the site's CSS custom properties, so light/dark and typography match with no configuration
-- **Honest loading state** — the badge shows a skeleton until it has actually measured the conversation, so it never reports a `0%` it hasn't verified
-- **No configuration, no account, no network calls**
+- Context-left badge and compact estimated-context panel
+- Context guard at 35%, 25%, and 15% left (no notifications or blocking)
+- Static personal model-limit overrides in `page_script.js`
+- One debounced same-origin conversation refresh after a reply stream finishes, avoiding per-token recalculation
+
+Everything runs locally in the tab. No data leaves your browser, nothing is stored, and the extension can only access `chatgpt.com`. See the [privacy policy](PRIVACY.md).
+
+### Personal context-limit override
+
+At the top of `page_script.js`, edit this object when a locally observed model slug needs an inferred limit override:
+
+```js
+const PERSONAL_CONTEXT_LIMIT_OVERRIDES = {
+  // 'my-model-slug': 200000,
+};
+```
 
 ## Install
-
-### From the Chrome Web Store
-
-_Listing pending review — link will go here once published._
 
 ### From source
 
@@ -34,9 +41,9 @@ _Listing pending review — link will go here once published._
 
 ## How it works
 
-1. **Response interception** — a `MAIN`-world script wraps the page's own `fetch` so it can read the `/backend-api/conversation/{id}` JSON that ChatGPT already loads. No extra requests are made.
+1. **Response interception** — a `MAIN`-world script wraps `fetch` to read ChatGPT conversation-detail JSON. After a reply stream finishes, it makes one debounced, same-origin conversation-detail refresh so the stable active branch is re-measured.
 2. **Branch walk** — the conversation is a tree, not a list. Only the active branch from the root to `current_node` counts toward the context window, so the parser walks that path and ignores edited-away siblings.
-3. **Token estimation** — subword BPE estimation across message categories, including content types that are easy to forget: reasoning traces, tool output, file search results, and the user profile / custom instructions block.
+3. **Token estimation** — a lightweight heuristic across message categories, including reasoning traces, tool output, file search results, and the user profile / custom instructions block.
 4. **Badge** — a pill in the bottom-right, expanding on click into the category breakdown.
 
 ## Development
@@ -64,7 +71,7 @@ for s in 16 48 128; do rsvg-convert -w $s -h $s icons/icon.svg -o icons/icon$s.p
 
 ## Caveats
 
-- Token counts are **estimates**. BPE estimation without the real tokenizer lands close but not exact.
+- Token counts and context limits are **estimates**; they are not OpenAI backend accounting.
 - The extension depends on ChatGPT's internal response shape, which OpenAI can change without notice. If the badge stops updating, that is the likely cause.
 - Context limits are inferred from the model slug and may lag behind new model releases.
 

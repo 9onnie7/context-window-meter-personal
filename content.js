@@ -26,27 +26,22 @@
     return Math.max(0, Math.round(estimated));
   }
 
-  function getStateColor(percentage) {
-    if (percentage < 50) return 'var(--gtu-ok)';
-    if (percentage < 80) return 'var(--gtu-warn)';
+  function getStateColor(leftPercent) {
+    if (leftPercent > 35) return 'var(--gtu-ok)';
+    if (leftPercent > 25) return 'var(--gtu-warn)';
+    if (leftPercent > 15) return 'var(--gtu-pressure)';
     return 'var(--gtu-crit)';
+  }
+
+  function guardMessage(leftPercent) {
+    if (leftPercent <= 15) return 'High context pressure';
+    if (leftPercent <= 25) return 'New chat recommended';
+    if (leftPercent <= 35) return 'Consider wrapping up this phase';
+    return '';
   }
 
   function formatNumber(num) {
     return new Intl.NumberFormat().format(num || 0);
-  }
-
-  function formatCompact(num) {
-    if (!num) return '0';
-    if (num >= 1000) return Math.round(num / 1000) + 'k';
-    return String(num);
-  }
-
-  // `source` doubles as an internal precedence flag, so it gets a plain-language
-  // label at render time instead of leaking the flag name into the card.
-  function sourceLabel(source) {
-    if (source === 'Network SSE Stream') return 'Counted from the conversation';
-    return 'Estimated from the page';
   }
 
   function escapeHtml(value) {
@@ -161,24 +156,25 @@
     const ringPath = document.getElementById('gpt-token-ring-path');
     const pctText = document.getElementById('gpt-token-pct-text');
     const countText = document.getElementById('gpt-token-count-text');
-    const color = getStateColor(data.percentage);
+    const leftPercent = Number.isFinite(data.leftPercent) ? Math.max(0, Math.min(100, data.leftPercent)) : Math.max(0, 100 - data.percentage);
+    const color = getStateColor(leftPercent);
 
     if (ringPath) {
-      ringPath.setAttribute('stroke-dasharray', `${data.percentage}, 100`);
+      ringPath.setAttribute('stroke-dasharray', `${leftPercent}, 100`);
       ringPath.setAttribute('stroke', color);
     }
 
     if (pctText) {
-      pctText.innerText = `${Math.round(data.percentage)}%`;
+      pctText.innerText = `${Math.round(leftPercent)}%`;
     }
 
     if (countText) {
-      countText.innerText = `${formatNumber(data.totalTokens)} / ${formatCompact(data.limit)}`;
+      countText.innerText = `${Math.round(leftPercent)}% left`;
     }
 
     widgetContainer.setAttribute(
       'aria-label',
-      `Context window ${Math.round(data.percentage)} percent used, ${formatNumber(data.totalTokens)} of ${formatNumber(data.limit)} tokens.`
+      `Estimated context: ${Math.round(leftPercent)} percent left, ${Math.round(data.percentage)} percent used.`
     );
 
     if (isCardOpen) {
@@ -240,13 +236,15 @@
       return;
     }
 
-    const color = getStateColor(currentData.percentage);
+    const leftPercent = Number.isFinite(currentData.leftPercent) ? Math.max(0, Math.min(100, currentData.leftPercent)) : Math.max(0, 100 - currentData.percentage);
+    const color = getStateColor(leftPercent);
     const breakdown = currentData.breakdown || {};
-    const remainingTokens = Math.max(0, currentData.limit - currentData.totalTokens);
+    const remainingTokens = Number.isFinite(currentData.remainingTokens) ? Math.max(0, currentData.remainingTokens) : Math.max(0, currentData.limit - currentData.totalTokens);
+    const warning = guardMessage(leftPercent);
 
     detailsCard.innerHTML = `
       <div class="gpt-token-card-head">
-        <span class="gpt-token-card-title">Context window</span>
+        <span class="gpt-token-card-title">Estimated context</span>
         <span class="gpt-token-model">${escapeHtml(currentData.modelSlug || 'gpt-4o')}</span>
       </div>
 
@@ -255,8 +253,11 @@
         <span class="gpt-token-headline-note">used</span>
       </div>
       <div class="gpt-token-headline-sub">
-        ${formatNumber(currentData.totalTokens)} of ${formatNumber(currentData.limit)} tokens · ${formatNumber(remainingTokens)} left
+        ${formatNumber(currentData.totalTokens)} / ${formatNumber(currentData.limit)} estimated tokens<br>
+        ${formatNumber(remainingTokens)} estimated tokens left · ${Math.round(leftPercent)}% left
       </div>
+
+      ${warning ? `<div class="gpt-token-guard" style="color: ${color};">${warning}</div>` : ''}
 
       <div class="gpt-token-bar">
         ${renderSegments(breakdown, currentData.limit)}
@@ -268,7 +269,7 @@
       </div>
 
       <div class="gpt-token-foot">
-        <span>${escapeHtml(sourceLabel(currentData.source))}</span>
+        <span title="Token usage is estimated from visible conversation data and inferred model limits.">Estimated · ${escapeHtml(currentData.limitSource || 'default fallback')}</span>
         <button id="gpt-token-close-btn" type="button">Close</button>
       </div>
     `;
@@ -282,7 +283,7 @@
 
   // Enhanced DOM Fallback Scanner
   function scanDOMFallback() {
-    if (currentData && currentData.source === 'Network SSE Stream' && currentData.totalTokens > 0) return;
+    if (currentData && currentData.limitSource !== 'DOM fallback' && currentData.totalTokens > 0) return;
 
     const articles = document.querySelectorAll('article');
     let userText = '';
@@ -318,6 +319,8 @@
         totalTokens,
         limit,
         percentage: parseFloat(percentage.toFixed(2)),
+        leftPercent: parseFloat((100 - percentage).toFixed(2)),
+        remainingTokens: Math.max(0, limit - totalTokens),
         modelSlug: 'gpt-4o',
         breakdown: {
           user: userTokens,
@@ -326,7 +329,7 @@
           thought: 0,
           system: 0
         },
-        source: 'Estimated from the page',
+        limitSource: 'DOM fallback',
         updatedAt: new Date().toISOString()
       });
     }
@@ -337,7 +340,6 @@
     if (event.source !== window) return;
     if (event.data && event.data.type === 'CHATGPT_TOKEN_USAGE_UPDATE') {
       const data = event.data.data;
-      data.source = 'Network SSE Stream';
       updateWidgetUI(data);
     }
   });
@@ -346,13 +348,15 @@
     createWidget();
     scanDOMFallback();
 
+    let fallbackTimer = null;
     const observer = new MutationObserver(mutations => {
       const onlyTrackerMutations = mutations.length > 0 && mutations.every(mutation =>
         widgetContainer?.contains(mutation.target) || detailsCard?.contains(mutation.target)
       );
       if (onlyTrackerMutations) return;
 
-      scanDOMFallback();
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(scanDOMFallback, 500);
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }

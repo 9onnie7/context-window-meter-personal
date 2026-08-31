@@ -19,6 +19,12 @@
     'default': 128000
   };
 
+  // Personal-only overrides. Add a model slug and its inferred context limit here.
+  // Example: 'my-model-slug': 200000,
+  const PERSONAL_CONTEXT_LIMIT_OVERRIDES = {};
+  const CONVERSATION_REFRESH_DELAY_MS = 500;
+  let refreshTimer = null;
+
   function estimateTokens(text) {
     if (!text || typeof text !== 'string') return 0;
     const words = text.match(/\w+/g) || [];
@@ -27,13 +33,32 @@
     return Math.max(0, Math.round(estimated));
   }
 
-  function getContextLimit(modelSlug) {
-    if (!modelSlug) return MODEL_CONTEXT_LIMITS['default'];
-    const slug = modelSlug.toLowerCase();
-    for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
-      if (slug.includes(key)) return limit;
+  function resolveContextLimit(modelSlug) {
+    const slug = String(modelSlug || '').toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(PERSONAL_CONTEXT_LIMIT_OVERRIDES, slug)) {
+      return { limit: PERSONAL_CONTEXT_LIMIT_OVERRIDES[slug], source: 'override' };
     }
-    return MODEL_CONTEXT_LIMITS['default'];
+    if (Object.prototype.hasOwnProperty.call(MODEL_CONTEXT_LIMITS, slug)) {
+      return { limit: MODEL_CONTEXT_LIMITS[slug], source: 'exact mapping' };
+    }
+    for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
+      if (key !== 'default' && slug.includes(key)) return { limit, source: 'pattern mapping' };
+    }
+    return { limit: MODEL_CONTEXT_LIMITS.default, source: 'default fallback' };
+  }
+
+  function contextMetrics(totalTokens, limit) {
+    const safeTotal = Number.isFinite(totalTokens) ? Math.max(0, totalTokens) : 0;
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 0;
+    const usedPercent = safeLimit ? Math.min(100, (safeTotal / safeLimit) * 100) : 0;
+    const remainingTokens = safeLimit ? Math.max(0, safeLimit - safeTotal) : 0;
+    return {
+      totalTokens: safeTotal,
+      limit: safeLimit,
+      percentage: Number(usedPercent.toFixed(2)),
+      leftPercent: Number((safeLimit ? (remainingTokens / safeLimit) * 100 : 0).toFixed(2)),
+      remainingTokens
+    };
   }
 
   function dispatchTokenUpdate(textByRole, modelSlug) {
@@ -48,19 +73,18 @@
 
     if (totalTokens === 0) return;
 
-    const limit = getContextLimit(modelSlug);
-    const percentage = Math.min(100, (totalTokens / limit) * 100);
+    const resolvedLimit = resolveContextLimit(modelSlug);
+    const metrics = contextMetrics(totalTokens, resolvedLimit.limit);
 
-    console.log(`[ChatGPT Token Tracker] Validated Token Count: ${totalTokens} tokens (${percentage.toFixed(1)}%) for ${modelSlug}`);
+    console.log(`[ChatGPT Token Tracker] Estimated tokens: ${metrics.totalTokens} (${metrics.percentage.toFixed(1)}% used) for ${modelSlug}`);
 
     window.postMessage(
       {
         type: 'CHATGPT_TOKEN_USAGE_UPDATE',
         data: {
-          totalTokens,
-          limit,
-          percentage: parseFloat(percentage.toFixed(2)),
+          ...metrics,
           modelSlug,
+          limitSource: resolvedLimit.source,
           breakdown,
           charCount: Object.values(textByRole).reduce((a, b) => a + b.length, 0),
           updatedAt: new Date().toISOString()
@@ -167,112 +191,30 @@
     dispatchTokenUpdate(textByRole, modelSlug);
   }
 
-  function processStreamText(fullText) {
-    let modelSlug = 'gpt-4o';
-    const textByRole = {
-      user: '',
-      assistant: '',
-      system: '',
-      tool: '',
-      thought: ''
-    };
-
-    const uniqueMessages = new Set();
-    const blocks = fullText.split(/\r?\n\r?\n/);
-
-    for (const blockStr of blocks) {
-      const lines = blockStr.split(/\r?\n/).filter(l => !l.startsWith(':'));
-      if (!lines.length) continue;
-
-      const dataLines = [];
-      for (const line of lines) {
-        if (line.startsWith('event:')) continue;
-        if (line.startsWith('data: ')) {
-          dataLines.push(line.slice(6));
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5));
-        } else {
-          dataLines.push(line);
-        }
-      }
-
-      let rawJson = dataLines.join('\n').trim();
-      if (!rawJson || rawJson === '[DONE]' || rawJson.startsWith('[DONE')) continue;
-
-      try {
-        const obj = JSON.parse(rawJson);
-        if (!obj || typeof obj !== 'object') continue;
-
-        if (obj.type === 'server_ste_metadata' && obj.metadata?.model_slug) {
-          modelSlug = obj.metadata.model_slug;
-        }
-
-        if (obj.input_message) {
-          const im = obj.input_message;
-          const targetRole = getMessageRole(im);
-          const messageModelSlug = getMessageModelSlug(im);
-          if (messageModelSlug) modelSlug = messageModelSlug;
-          textByRole[targetRole] += extractContentText(im.content);
-        }
-
-        const v = obj.v;
-        if (v && typeof v === 'object' && v.message) {
-          const msg = v.message;
-          const msgId = msg.id;
-          const messageModelSlug = getMessageModelSlug(msg);
-          if (messageModelSlug) modelSlug = messageModelSlug;
-
-          if (msgId && !uniqueMessages.has(msgId)) {
-            uniqueMessages.add(msgId);
-            const targetRole = getMessageRole(msg);
-            textByRole[targetRole] += extractContentText(msg.content);
-          }
-        }
-
-        const o = obj.o;
-        const p = obj.p;
-        if (o === 'append' && typeof v === 'string') {
-          if (p === '/message/content/thoughts') {
-            textByRole.thought += v;
-          } else if (p === '/message/content/text' || (p && p.includes('/message/content/parts/'))) {
-            textByRole.assistant += v;
-          }
-        } else if (o === 'append' && p === '/message/content/thoughts' && Array.isArray(v)) {
-          textByRole.thought += extractContentText({ thoughts: v });
-        }
-      } catch (e) {
-        // Skip incomplete chunk JSON
-      }
-    }
-
-    dispatchTokenUpdate(textByRole, modelSlug);
-  }
-
-  function handleStreamReader(streamReader) {
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-
-    function read() {
-      streamReader.read().then(({ done, value }) => {
-        if (value) {
-          buffer += decoder.decode(value, { stream: true });
-          processStreamText(buffer);
-        }
-        if (!done) {
-          read();
-        } else {
-          buffer += decoder.decode();
-          processStreamText(buffer);
-        }
-      }).catch(err => {});
-    }
-
-    read();
-  }
-
-  function shouldIntercept(url) {
+  function isConversationDetail(url) {
     if (!url || typeof url !== 'string') return false;
     return /^(?:https?:\/\/[^/]+)?\/backend-api\/conversation\/[^/?#]+\/?(?:[?#].*)?$/.test(url);
+  }
+
+  function isConversationSubmission(url) {
+    return /^(?:https?:\/\/[^/]+)?\/backend-api\/(?:f\/)?conversation\/?(?:[?#].*)?$/.test(url || '');
+  }
+
+  function currentConversationId() {
+    return window.location?.pathname.match(/^\/c\/([^/?#]+)/)?.[1] || null;
+  }
+
+  function refreshConversationAfterStream(response) {
+    if (!response.body?.getReader) return;
+    const reader = response.clone().body.getReader();
+    const drain = () => reader.read().then(({ done }) => {
+      if (!done) return drain();
+      const conversationId = currentConversationId();
+      if (!conversationId) return;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => window.fetch(`/backend-api/conversation/${conversationId}`), CONVERSATION_REFRESH_DELAY_MS);
+    }).catch(() => {});
+    drain();
   }
 
   // Intercept fetch
@@ -282,15 +224,14 @@
 
     try {
       const targetUrl = response.url || (typeof args[0] === 'string' ? args[0] : args[0]?.url || '');
-      if (shouldIntercept(targetUrl)) {
-        console.log('[ChatGPT Token Tracker] Target conversation fetch intercepted:', targetUrl);
+      if (isConversationDetail(targetUrl)) {
 
         response.clone().json().then(json => {
           processJsonMapping(json);
         }).catch(err => {
           console.error('[ChatGPT Token Tracker] Conversation JSON parse error:', err);
         });
-      }
+      } else if (isConversationSubmission(targetUrl)) refreshConversationAfterStream(response);
     } catch (err) {
       console.error('[ChatGPT Token Tracker] Fetch intercept error:', err);
     }

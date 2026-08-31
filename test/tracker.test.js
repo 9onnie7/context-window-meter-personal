@@ -6,8 +6,8 @@ const vm = require('node:vm');
 
 const projectRoot = path.resolve(__dirname, '..');
 
-function runScript(filename, globals) {
-  const source = fs.readFileSync(path.join(projectRoot, filename), 'utf8');
+function runScript(filename, globals, transform = source => source) {
+  const source = transform(fs.readFileSync(path.join(projectRoot, filename), 'utf8'));
   vm.runInNewContext(source, globals, { filename });
 }
 
@@ -137,6 +137,86 @@ test('counts only active-branch content across conversation JSON schemas', async
   assert.ok(usage.breakdown.user > 0);
   assert.ok(usage.breakdown.thought > 0);
   assert.equal(usage.breakdown.assistant, 0);
+});
+
+test('resolves overrides before mappings and clamps context math', () => {
+  const window = { fetch() {}, postMessage() {} };
+  window.window = window;
+  runScript('page_script.js', { window, console: { log() {}, error() {} } }, source => source
+    .replace("const PERSONAL_CONTEXT_LIMIT_OVERRIDES = {};", "const PERSONAL_CONTEXT_LIMIT_OVERRIDES = { 'gpt-5': 12345 };")
+    .replace('})();', ';window.__meterTestApi = { resolveContextLimit, contextMetrics };})();')
+  );
+
+  assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('gpt-5')), JSON.stringify({ limit: 12345, source: 'override' }));
+  assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('gpt-4o')), JSON.stringify({ limit: 128000, source: 'exact mapping' }));
+  assert.equal(JSON.stringify(window.__meterTestApi.resolveContextLimit('unknown-model')), JSON.stringify({ limit: 128000, source: 'default fallback' }));
+  assert.equal(JSON.stringify(window.__meterTestApi.contextMetrics(250, 100)), JSON.stringify({
+    totalTokens: 250,
+    limit: 100,
+    percentage: 100,
+    leftPercent: 0,
+    remainingTokens: 0
+  }));
+  assert.equal(JSON.stringify(window.__meterTestApi.contextMetrics(NaN, 0)), JSON.stringify({
+    totalTokens: 0,
+    limit: 0,
+    percentage: 0,
+    leftPercent: 0,
+    remainingTokens: 0
+  }));
+});
+
+test('refreshes the active conversation once after a reply stream finishes', async () => {
+  const updates = [];
+  const detail = JSON.stringify({
+    current_node: 'message',
+    default_model_slug: 'gpt-4o',
+    mapping: {
+      message: {
+        parent: null,
+        message: { author: { role: 'user' }, content: { parts: ['refresh me'] } }
+      }
+    }
+  });
+  const requestedUrls = [];
+  const window = {
+    location: { pathname: '/c/conversation-id' },
+    fetch: async url => {
+      requestedUrls.push(url);
+      return new Response(url === '/backend-api/f/conversation' ? 'data: [DONE]\n\n' : detail);
+    },
+    postMessage(message) {
+      if (message.type === 'CHATGPT_TOKEN_USAGE_UPDATE') updates.push(message.data);
+    }
+  };
+  window.window = window;
+  runScript('page_script.js', { window, Response, setTimeout, clearTimeout, console: { log() {}, error() {} } });
+
+  await window.fetch('/backend-api/f/conversation');
+  await new Promise(resolve => setTimeout(resolve, 600));
+
+  assert.ok(requestedUrls.includes('/backend-api/conversation/conversation-id'));
+  assert.ok(updates.at(-1), 'the refreshed detail should produce a usage update');
+});
+
+test('uses the intended context guard boundaries', () => {
+  const window = { addEventListener() {} };
+  window.window = window;
+  runScript('content.js', {
+    window,
+    document: { readyState: 'loading', addEventListener() {} },
+    MutationObserver: class {},
+    Intl,
+    console: { log() {} }
+  }, source => source.replace('})();', ';window.__meterTestApi = { guardMessage, getStateColor };})();'));
+
+  const { guardMessage } = window.__meterTestApi;
+  assert.equal(guardMessage(36), '');
+  assert.equal(guardMessage(35), 'Consider wrapping up this phase');
+  assert.equal(guardMessage(26), 'Consider wrapping up this phase');
+  assert.equal(guardMessage(25), 'New chat recommended');
+  assert.equal(guardMessage(16), 'New chat recommended');
+  assert.equal(guardMessage(15), 'High context pressure');
 });
 
 class FakeElement {

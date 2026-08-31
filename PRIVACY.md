@@ -2,7 +2,7 @@
 
 _Last updated: 20 July 2026_
 
-_Published copy: <https://joostmbakker.github.io/context-window-meter/> (`docs/index.md` — keep the two in sync)._
+_This personal fork has no published privacy-policy copy or remote service._
 
 ## Summary
 
@@ -11,8 +11,10 @@ This extension collects nothing, stores nothing, and sends nothing anywhere.
 ## What the extension does
 
 The extension runs only on `https://chatgpt.com/*`. It wraps the page's own
-`fetch` function so it can read the conversation JSON that ChatGPT already
-loads, count the tokens in it, and display the total in a badge on the page.
+`fetch` function so it can read ChatGPT conversation JSON, estimate its tokens,
+and display the result in a badge. After a reply stream completes, it may make
+one same-origin request to ChatGPT for that conversation's detail; it never
+sends conversation data to another service.
 
 All of this happens in your browser tab, in memory, while the tab is open.
 
