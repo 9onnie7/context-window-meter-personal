@@ -571,7 +571,8 @@ test('uses the intended context guard boundaries', () => {
       remainingTokens: null
     };
     assert.equal(contextState(overflowData), 'overflow');
-    assert.equal(contextWarning(overflowData), 'Mapping exceeds reference');
+    assert.equal(contextWarning(overflowData), 'Mapping at/above reference');
+    assert.doesNotMatch(contextWarning(overflowData), /exceeds/);
     assert.doesNotMatch(contextWarning(overflowData), /High context pressure/);
   }
 
@@ -627,24 +628,28 @@ test('badge shows reference and overflow states without fake remaining percentag
   assert.equal(elements['gpt-token-count-text'].innerText, 'Ref. 50% left');
   assert.doesNotMatch(elements['gpt-token-count-text'].innerText, /used/);
 
-  // Overflow state: no fake 0% left, no fake 100% used.
-  window.__meterTestApi.updateWidgetUI({
-    totalTokens: 505729,
-    limit: 272000,
-    referenceExceeded: true,
-    percentage: null,
-    leftPercent: null,
-    remainingTokens: null,
-    modelSlug: 'gpt-5-6-thinking',
-    modelSource: 'backend',
-    limitSource: 'documented ChatGPT reference',
-    limitConfidence: 'documented',
-    dataSource: 'backend',
-    breakdown: { user: 10000, assistant: 10000, tool: 10000, thought: 10000, system: 10000 }
-  });
-  assert.equal(elements['gpt-token-count-text'].innerText, 'Mapping > ref');
-  assert.notEqual(elements['gpt-token-count-text'].innerText, '0% left');
-  assert.notEqual(elements['gpt-token-pct-text'].innerText, '0%');
+  // At and above the reference: no fake 0% left, no fake 100% used, and no
+  // mathematically incorrect "exceeds" wording at exact equality.
+  for (const totalTokens of [272000, 505729]) {
+    window.__meterTestApi.updateWidgetUI({
+      totalTokens,
+      limit: 272000,
+      referenceExceeded: true,
+      percentage: null,
+      leftPercent: null,
+      remainingTokens: null,
+      modelSlug: 'gpt-5-6-thinking',
+      modelSource: 'backend',
+      limitSource: 'documented ChatGPT reference',
+      limitConfidence: 'documented',
+      dataSource: 'backend',
+      breakdown: { user: 10000, assistant: 10000, tool: 10000, thought: 10000, system: 10000 }
+    });
+    assert.equal(elements['gpt-token-count-text'].innerText, 'Mapping ≥ ref');
+    assert.doesNotMatch(elements['gpt-token-count-text'].innerText, /exceeds|> ref/);
+    assert.notEqual(elements['gpt-token-count-text'].innerText, '0% left');
+    assert.notEqual(elements['gpt-token-pct-text'].innerText, '0%');
+  }
 });
 
 class FakeElement {

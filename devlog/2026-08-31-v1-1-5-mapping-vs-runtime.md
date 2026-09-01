@@ -14,8 +14,8 @@
   now returns `referenceExceeded` and nulls percentage/left/remaining instead
   of clamping to a fake 100%/0% when mapping >= reference. `content.js` — new
   reference / overflow / unknown states; badge shows `Ref. X% left` below the
-  reference and `Mapping > ref` at/above it; overflow panel shows mapping
-  tokens, reference window, "Mapping exceeds reference window" and "Runtime
+  reference and `Mapping ≥ ref` at/above it; overflow panel shows mapping
+  tokens, reference window, "Mapping at/above reference window" and "Runtime
   context unavailable"; guard wording now reference-based (35/25/15 kept).
   README documents mapping-vs-runtime and the 272K reference with official
   OpenAI references. Version 1.1.5.

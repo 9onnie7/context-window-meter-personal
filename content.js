@@ -57,7 +57,7 @@
   }
 
   // 'reference': mapping below the reference window, ratio available.
-  // 'overflow':  mapping meets/exceeds the reference window; live runtime
+  // 'overflow':  mapping is at or above the reference window; live runtime
   //              usage is not observable, so no fake 100%/0% is shown.
   // 'unknown':   no reference window known.
   function contextState(data) {
@@ -67,7 +67,7 @@
   }
 
   function contextWarning(data) {
-    if (contextState(data) === 'overflow') return 'Mapping exceeds reference';
+    if (contextState(data) === 'overflow') return 'Mapping at/above reference';
     return hasKnownContext(data) ? guardMessage(data.leftPercent) : '';
   }
 
@@ -261,11 +261,11 @@
 
     if (countText) {
       if (state === 'reference') countText.innerText = `Ref. ${Math.round(leftPercent)}% left`;
-      else if (state === 'overflow') countText.innerText = 'Mapping > ref';
+      else if (state === 'overflow') countText.innerText = 'Mapping ≥ ref';
       else countText.innerText = `~${formatNumber(currentData.totalTokens)} tokens`;
     }
 
-    const overflowTitle = 'The persisted active conversation mapping exceeds the reference window. Actual runtime context usage is not observable.';
+    const overflowTitle = 'The persisted active conversation mapping is at or above the reference window. Actual runtime context usage is not observable.';
     widgetContainer.setAttribute('title', state === 'overflow' ? overflowTitle : 'Context window usage');
     widgetContainer.setAttribute(
       'aria-label',
@@ -361,7 +361,7 @@
         <div class="gpt-token-headline-sub">Reference window: ${formatNumber(currentData.limit)}</div>
         <div class="gpt-token-headline-sub">Runtime context unavailable</div>
       `;
-      guardHtml = `<div class="gpt-token-guard" style="color: var(--gtu-text-2);">Mapping exceeds reference window</div>`;
+      guardHtml = `<div class="gpt-token-guard" style="color: var(--gtu-text-2);">Mapping at/above reference window</div>`;
     } else if (state === 'reference') {
       const leftPercent = Math.max(0, Math.min(100, currentData.leftPercent));
       const color = getStateColor(leftPercent);

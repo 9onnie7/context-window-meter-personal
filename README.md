@@ -55,7 +55,7 @@ tool context all happen outside the browser.
 **Mapping size is not live runtime context usage.** A conversation mapping may
 therefore exceed the model's documented reference window while the conversation
 remains usable. When the mapping meets or exceeds the reference, the extension
-reports that the mapping exceeds the reference window and stops presenting a
+reports that the mapping is at or above the reference window and stops presenting a
 remaining-context percentage, because actual runtime usage is not observable.
 
 ### GPT-5.6 Thinking reference
@@ -100,7 +100,7 @@ for s in 16 48 128; do rsvg-convert -w $s -h $s icons/icon.svg -o icons/icon$s.p
 
 - Token counts and context limits are **estimates**; they are not OpenAI backend accounting.
 - "Full mapping" means the complete **active** conversation mapping was available to the extension. It does not mean exact OpenAI runtime token accounting, access to hidden server context, hidden system prompts, or transient tool context.
-- Mapping size and live runtime context usage are different things. Below the reference window the badge shows a reference ratio; at or above it the extension shows "Mapping > ref" and no percentage, because runtime usage is not observable.
+- Mapping size and live runtime context usage are different things. Below the reference window the badge shows a reference ratio; at or above it the extension shows "Mapping ≥ ref" and no percentage, because runtime usage is not observable.
 - Tool/search usage reflects only countable tool content persisted in the active conversation mapping. Some ChatGPT tool executions may retain structural tool nodes without persisted text and can therefore contribute zero estimated tokens; this is not an extension bug.
 - DOM fallback is partial and may exclude history unloaded by ChatGPT. Unknown models and limits remain visibly unknown.
 - The extension depends on ChatGPT's internal response shape, which OpenAI can change without notice. If the badge stops updating, that is the likely cause.
