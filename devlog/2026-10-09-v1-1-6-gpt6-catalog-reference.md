@@ -21,3 +21,12 @@
   scripts; git diff --check passed. All six new tests use synthetic data.
 - Release gate: real logged-in Windows Chrome validation required. Upload only
   gpt6-catalog-reference; do not update stable main or create a release/tag yet.
+
+## Stable release acceptance
+
+- 2026-10-09: the user confirmed real Windows Chrome acceptance and explicitly
+  authorized the official release. This supersedes the candidate-only gate above.
+- Release preparation updates only this record and README acceptance wording;
+  the tested production implementation is unchanged from candidate 2f3c6a5.
+- Publish by fast-forwarding origin/main, creating annotated personal-v1.1.6,
+  and creating the official GitHub Release. Preserve the v1.1.5 tag and release.

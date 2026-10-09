@@ -85,8 +85,8 @@ priority over the catalog; GPT-5.6's existing 272K documented reference is uncha
 Catalogs arriving before or after the conversation mapping work without an extra
 request or a new message. Only the model slug and reference number are retained
 in page memory, along with the latest aggregate mapping statistics for refresh.
-Mapping/reference overflow safeguards remain unchanged. Real logged-in Chrome
-validation is required before the v1.1.6 candidate becomes a stable release.
+Mapping/reference overflow safeguards remain unchanged. The user confirmed
+real logged-in Windows Chrome acceptance before the v1.1.6 stable release.
 
 ## How it works
 
