@@ -15,6 +15,164 @@ function waitForStreams() {
   return new Promise(resolve => setTimeout(resolve, 20));
 }
 
+function catalogHarness() {
+  const updates = [];
+  const requests = [];
+  const id = '11111111-1111-4111-8111-111111111111';
+  let body = {};
+  let options = { headers: { 'content-type': 'application/json' } };
+  const window = {
+    location: { origin: 'https://chatgpt.com', pathname: `/c/${id}` },
+    fetch: async (...args) => {
+      requests.push(args);
+      return new Response(JSON.stringify(body), options);
+    },
+    postMessage: message => updates.push(message.data)
+  };
+  window.window = window;
+  runScript('page_script.js', { window, URL, Response, console: { log() {}, error() {} } }, source =>
+    source.replace('})();', ';window.__meterTestApi = { resolveContextLimit };})();'));
+  return {
+    window, updates, requests, id,
+    async respond(url, json, responseOptions = options, init) {
+      body = json;
+      options = responseOptions;
+      const response = await window.fetch(url, init);
+      assert.deepEqual(await response.json(), json, 'page retains the original response body');
+      await waitForStreams();
+    },
+    async mapping(slug = 'gpt-6-thinking', conversationId = id) {
+      await this.respond(`/backend-api/conversation/${conversationId}`, {
+        current_node: 'synthetic', default_model_slug: slug,
+        mapping: {
+          synthetic: { parent: null, message: {
+            author: { role: 'assistant' },
+            content: { parts: ['Synthetic mapping content, not a real conversation.'] },
+            metadata: { model_slug: slug }
+          } }
+        }
+      });
+    }
+  };
+}
+
+test('accepts only the exact Chat GPT-6 catalog reference with validated max_tokens', async () => {
+  const h = catalogHarness();
+  const resolve = h.window.__meterTestApi.resolveContextLimit;
+  assert.equal(resolve('gpt-6-thinking').limit, null);
+  await h.respond('/backend-api/models/?history_and_training_disabled=false', {
+    models: [{ slug: 'gpt-6-thinking', max_tokens: 262144 }, { slug: 'gpt-5-6-thinking', max_tokens: 262144 }]
+  });
+  assert.equal(resolve('gpt-6-thinking').limit, 262144);
+  assert.equal(resolve('gpt-6-thinking').source, 'ChatGPT model catalog · max_tokens');
+  assert.equal(resolve('gpt-6-thinking').confidence, 'catalog-reference');
+  assert.equal(resolve('gpt-5-6-thinking').limit, 272000);
+  assert.equal(resolve('gpt-6-sol-wm').limit, null);
+  assert.equal(resolve('gpt-6-instant').limit, null);
+  assert.equal(resolve('gpt-6-thinking', { modelSlug: 'gpt-6-thinking', contextWindowTokens: 123456 }).limit, 123456);
+  assert.equal(resolve('gpt-6-thinking', { modelSlug: 'other-model', contextWindowTokens: 1050000 }).limit, 262144);
+  await h.respond('/backend-api/models', { models: [{ slug: 'gpt-6-sol-wm', max_tokens: 262144 }] });
+  assert.equal(resolve('gpt-6-thinking').limit, 262144, 'Work catalogs cannot replace a Chat reference');
+  for (const value of [null, 0, -1, 1.5, '262144', Number.MAX_SAFE_INTEGER + 1]) {
+    await h.respond('/backend-api/models', { models: [{ slug: 'gpt-6-thinking', max_tokens: value, max_output_tokens: 128000 }] });
+    assert.equal(resolve('gpt-6-thinking').limit, null);
+  }
+  for (const models of [
+    [{ slug: 'gpt-6-thinking', max_output_tokens: 128000 }],
+    [{ slug: 'gpt-6-sol', max_tokens: 1050000 }],
+    [{ slug: 'gpt-6-thinking', max_tokens: 262144 }, { slug: 'gpt-6-thinking', max_tokens: 200000 }],
+    []
+  ]) {
+    await h.respond('/backend-api/models', { models });
+    assert.equal(resolve('gpt-6-thinking').limit, null);
+  }
+  assert.equal(h.updates.length, 0);
+});
+
+test('catalog interception is same-origin GET JSON only and makes no additional requests', async () => {
+  const h = catalogHarness();
+  const catalog = { models: [{ slug: 'gpt-6-thinking', max_tokens: 262144 }] };
+  const json = { headers: { 'content-type': 'application/json' } };
+  for (const [url, options, init] of [
+    ['https://other.invalid/backend-api/models', json],
+    ['/backend-api/models/not-a-catalog', json],
+    ['/backend-api/models', json, { method: 'POST' }],
+    ['/backend-api/models', { ...json, status: 403 }],
+    ['/backend-api/models', { headers: { 'content-type': 'text/plain' } }]
+  ]) {
+    await h.respond(url, catalog, options, init);
+    assert.equal(h.window.__meterTestApi.resolveContextLimit('gpt-6-thinking').limit, null);
+  }
+  await h.respond('/backend-api/models', { models: { slug: 'gpt-6-thinking', max_tokens: 262144 } }, json);
+  assert.equal(h.window.__meterTestApi.resolveContextLimit('gpt-6-thinking').limit, null);
+  await h.respond(new Request('https://chatgpt.com/backend-api/models?x=1'), catalog, json);
+  assert.equal(h.window.__meterTestApi.resolveContextLimit('gpt-6-thinking').limit, 262144);
+  assert.equal(h.requests.length, 7, 'exactly one original request per page fetch, no recursion or new requests');
+});
+
+test('both catalog/mapping response orders reuse counts and refresh immediately without another fetch', async () => {
+  for (const catalogFirst of [true, false]) {
+    const h = catalogHarness();
+    const catalog = { models: [{ slug: 'gpt-6-thinking', max_tokens: 262144 }] };
+    if (catalogFirst) await h.respond('/backend-api/models', catalog);
+    await h.mapping();
+    const before = h.updates.at(-1);
+    if (!catalogFirst) {
+      assert.equal(before.limit, null);
+      assert.equal(before.percentage, null);
+      await h.respond('/backend-api/models', catalog);
+    }
+    const after = h.updates.at(-1);
+    assert.equal(after.modelSlug, 'gpt-6-thinking');
+    assert.equal(after.limit, 262144);
+    assert.equal(after.limitConfidence, 'catalog-reference');
+    assert.ok(after.percentage > 0);
+    assert.equal(after.totalTokens, before.totalTokens);
+    assert.deepEqual(after.breakdown, before.breakdown);
+    assert.equal(after.charCount, before.charCount);
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.updates.length, catalogFirst ? 1 : 2);
+    await h.respond('/backend-api/models', catalog);
+    assert.equal(h.updates.length, catalogFirst ? 1 : 2, 'unchanged catalog does not duplicate updates');
+  }
+});
+
+test('late catalogs do not replay stale routes or reuse a previous model reference', async () => {
+  const h = catalogHarness();
+  await h.mapping();
+  h.window.location.pathname = '/c/22222222-2222-4222-8222-222222222222';
+  await h.respond('/backend-api/models', { models: [{ slug: 'gpt-6-thinking', max_tokens: 262144 }] });
+  assert.equal(h.updates.length, 1, 'old conversation is not republished on a new route');
+  await h.mapping('gpt-6-luna-wm', '22222222-2222-4222-8222-222222222222');
+  assert.equal(h.updates.at(-1).limit, null);
+  await h.respond('/backend-api/models', { models: [{ slug: 'gpt-6-thinking', max_tokens: 200000 }] });
+  assert.equal(h.updates.length, 2, 'catalog for another model does not overwrite current data');
+  await h.mapping('gpt-5-6-thinking', '22222222-2222-4222-8222-222222222222');
+  assert.equal(h.updates.at(-1).limit, 272000);
+  // Even an old detail response completing after navigation is not replayed by a catalog.
+  await h.mapping('gpt-6-thinking', h.id);
+  const count = h.updates.length;
+  await h.respond('/backend-api/models', { models: [{ slug: 'gpt-6-thinking', max_tokens: 262144 }] });
+  assert.equal(h.updates.length, count);
+});
+
+test('catalog body parsing is non-blocking and malformed JSON remains unknown', async () => {
+  let release;
+  const body = new ReadableStream({ start(controller) { release = () => {
+    controller.enqueue(new TextEncoder().encode('{malformed'));
+    controller.close();
+  }; } });
+  const response = new Response(body, { headers: { 'content-type': 'application/json' } });
+  const window = { location: { origin: 'https://chatgpt.com', pathname: '/' }, fetch: async () => response, postMessage() {} };
+  runScript('page_script.js', { window, URL, console: { log() {}, error() {} } }, source =>
+    source.replace('})();', ';window.__meterTestApi = { resolveContextLimit };})();'));
+  assert.equal(await window.fetch('/backend-api/models'), response, 'return before the body is available');
+  release();
+  assert.equal(await response.text(), '{malformed');
+  await waitForStreams();
+  assert.equal(window.__meterTestApi.resolveContextLimit('gpt-6-thinking').limit, null);
+});
+
 test('positions the token widget in the bottom-right corner', () => {
   const css = fs.readFileSync(path.join(projectRoot, 'styles.css'), 'utf8');
   const badgeRule = css.match(/\.gpt-token-badge \{([^}]*)\}/)?.[1] || '';
@@ -672,6 +830,57 @@ class FakeElement {
     return target === this || this.children.some(child => child.contains(target));
   }
 }
+
+test('catalog panel labels reference semantics and retains overflow and Unknown safeguards', () => {
+  const elements = {};
+  const document = {
+    body: new FakeElement('body'), readyState: 'complete',
+    createElement: tag => new FakeElement(tag),
+    getElementById: id => elements[id] || (elements[id] = {
+      innerText: '', setAttribute() {}, addEventListener() {}, classList: { add() {}, remove() {} }
+    }),
+    addEventListener() {}, querySelectorAll: () => [], querySelector: () => null
+  };
+  const window = { addEventListener() {} };
+  runScript('content.js', {
+    window, document, MutationObserver: class { observe() {} }, Intl, console: { log() {} }
+  }, source => source.replace('})();', `;window.__meterTestApi = {
+    updateWidgetUI,
+    openDetails() { isCardOpen = true; renderDetailsCard(); },
+    contextWarning
+  };})();`));
+  const api = window.__meterTestApi;
+  const base = {
+    totalTokens: 4876, limit: 262144, referenceExceeded: false,
+    percentage: 1.86, leftPercent: 98.14, remainingTokens: 257268,
+    modelSlug: 'gpt-6-thinking', modelSource: 'backend', dataSource: 'backend',
+    limitSource: 'ChatGPT model catalog · max_tokens', limitConfidence: 'catalog-reference',
+    breakdown: { user: 4876 }
+  };
+  api.updateWidgetUI(base);
+  api.openDetails();
+  const panel = document.body.children.find(element => element.id === 'chatgpt-token-usage-details');
+  assert.match(panel.innerHTML, /~1\.9%/);
+  assert.match(panel.innerHTML, /of catalog reference/);
+  assert.match(panel.innerHTML, /Catalog reference: 262,144/);
+  assert.match(panel.innerHTML, /ChatGPT model catalog · max_tokens/);
+  assert.match(panel.innerHTML, /Runtime context unavailable/);
+  assert.match(panel.innerHTML, /not verified per-session runtime context telemetry/);
+  assert.doesNotMatch(panel.innerHTML, /confirmed-runtime|exact-context-window|official-plus-limit/);
+  for (const totalTokens of [262144, 262145]) {
+    api.updateWidgetUI({ ...base, totalTokens, referenceExceeded: true, percentage: null, leftPercent: null, remainingTokens: null });
+    assert.equal(elements['gpt-token-count-text'].innerText, 'Mapping ≥ ref');
+    assert.equal(elements['gpt-token-pct-text'].innerText, '—');
+    assert.match(panel.innerHTML, /Catalog reference: 262,144/);
+    assert.match(panel.innerHTML, /Runtime context unavailable/);
+    assert.doesNotMatch(panel.innerHTML, /100% used|0% left|High context pressure/);
+  }
+  const unknown = { ...base, limit: null, referenceExceeded: false, percentage: null, leftPercent: null, remainingTokens: null, limitSource: 'unknown', limitConfidence: 'unknown' };
+  api.updateWidgetUI(unknown);
+  assert.match(panel.innerHTML, /Context limit unknown · percentage unavailable/);
+  assert.doesNotMatch(panel.innerHTML, /Catalog reference|gpt-token-guard/);
+  assert.equal(api.contextWarning(unknown), '');
+});
 
 test('ignores DOM mutations made by the tracker widget', () => {
   let observer;

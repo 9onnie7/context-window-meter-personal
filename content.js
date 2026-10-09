@@ -9,6 +9,7 @@
   let emptyStateTimer = null;
 
   const EMPTY_STATE_DELAY_MS = 7000;
+  const CATALOG_REFERENCE_TOOLTIP = "This value comes from ChatGPT's model catalog max_tokens field. It is a reference, not verified per-session runtime context telemetry.";
 
   const CATEGORIES = [
     { key: 'user', label: 'Your messages', color: 'var(--gtu-cat-user)' },
@@ -266,7 +267,9 @@
     }
 
     const overflowTitle = 'The persisted active conversation mapping is at or above the reference window. Actual runtime context usage is not observable.';
-    widgetContainer.setAttribute('title', state === 'overflow' ? overflowTitle : 'Context window usage');
+    widgetContainer.setAttribute('title', currentData.limitConfidence === 'catalog-reference'
+      ? CATALOG_REFERENCE_TOOLTIP
+      : state === 'overflow' ? overflowTitle : 'Context window usage');
     widgetContainer.setAttribute(
       'aria-label',
       state === 'reference'
@@ -337,6 +340,8 @@
 
     const state = contextState(currentData);
     const breakdown = currentData.breakdown || {};
+    const isCatalogReference = currentData.limitConfidence === 'catalog-reference';
+    const referenceLabel = isCatalogReference ? 'Catalog reference' : 'Reference window';
     const modelName = currentData.modelDisplayName || currentData.modelSlug || 'Unknown';
     const footer = currentData.dataSource === 'dom'
       ? 'Partial DOM estimate · may exclude unloaded history'
@@ -358,7 +363,7 @@
         </div>
       `;
       sub = `
-        <div class="gpt-token-headline-sub">Reference window: ${formatNumber(currentData.limit)}</div>
+        <div class="gpt-token-headline-sub">${referenceLabel}: ${formatNumber(currentData.limit)}</div>
         <div class="gpt-token-headline-sub">Runtime context unavailable</div>
       `;
       guardHtml = `<div class="gpt-token-guard" style="color: var(--gtu-text-2);">Mapping at/above reference window</div>`;
@@ -369,8 +374,8 @@
       const warning = contextWarning(currentData);
       headline = `
         <div class="gpt-token-headline">
-          <span class="gpt-token-headline-pct" style="color: ${color};">${Math.round(currentData.percentage)}%</span>
-          <span class="gpt-token-headline-note">of reference</span>
+          <span class="gpt-token-headline-pct" style="color: ${color};">${isCatalogReference ? `~${currentData.percentage.toFixed(1)}` : Math.round(currentData.percentage)}%</span>
+          <span class="gpt-token-headline-note">of ${isCatalogReference ? 'catalog reference' : 'reference'}</span>
         </div>
       `;
       sub = `
@@ -380,6 +385,10 @@
         <div class="gpt-token-headline-sub">
           ${formatNumber(remainingTokens)} tokens to reference · ${Math.round(leftPercent)}% ref. left
         </div>
+      `;
+      if (isCatalogReference) sub += `
+        <div class="gpt-token-headline-sub">Catalog reference: ${formatNumber(currentData.limit)}</div>
+        <div class="gpt-token-headline-sub">Runtime context unavailable</div>
       `;
       if (warning) guardHtml = `<div class="gpt-token-guard" style="color: ${color};">${warning}</div>`;
       barHtml = `<div class="gpt-token-bar">${renderSegments(breakdown, currentData.limit)}</div>`;
@@ -401,6 +410,7 @@
 
       ${headline}
       ${sub}
+      ${isCatalogReference ? `<div class="gpt-token-headline-sub" title="${escapeHtml(CATALOG_REFERENCE_TOOLTIP)}">ChatGPT model catalog · max_tokens</div>` : ''}
       ${guardHtml}
       ${barHtml}
 

@@ -15,7 +15,7 @@ ChatGPT gives you no indication of how full the context window is. You find out 
 - Context-left badge and compact estimated-context panel
 - Context guard at 35%, 25%, and 15% left (no notifications or blocking)
 - Static personal model-limit overrides in `page_script.js`
-- Known model limits are labelled with their provenance — inferred unless an explicitly matched ChatGPT runtime context-window value or a documented ChatGPT reference is available
+- Model references are labelled with their provenance: personal override, trusted runtime metadata, documented ChatGPT reference, model catalog reference, or inferred value
 - One debounced same-origin conversation refresh on normal, Project, and Custom GPT conversation routes
 - Ephemeral same-origin session auth for the conversation-detail request; credentials stay in page memory
 - Backend model-slug detection with a read-only UI label fallback
@@ -66,6 +66,28 @@ is a documented ChatGPT product reference, **not** a per-session runtime limit
 and **not** the GPT-5.6 Sol API's 1.05M context window, which is API capability
 and is deliberately not used as the ChatGPT Web reference.
 
+### GPT-6 Thinking model catalog reference
+
+In real Windows Chrome observations supplied by the user, the ordinary ChatGPT
+Chat model catalog reported `gpt-6-thinking.max_tokens = 262144`. Version 1.1.6
+reads successful existing same-origin `/backend-api/models` GET responses and
+uses a valid, exactly matched value as **ChatGPT model catalog · max_tokens**
+(`catalog-reference`). The observed number is not a hardcoded fallback.
+
+The field's precise runtime semantics are unverified: this is not an official
+Plus context-window guarantee or per-session runtime telemetry. The panel shows
+mapping size relative to the catalog reference and "Runtime context unavailable".
+Missing or invalid Chat catalog entries remain Unknown. Work/Codex `*-wm` entries
+and the GPT-6 API's 1.05M context size are not used as Chat references.
+
+Personal overrides, trusted runtime metadata, and documented references take
+priority over the catalog; GPT-5.6's existing 272K documented reference is unchanged.
+Catalogs arriving before or after the conversation mapping work without an extra
+request or a new message. Only the model slug and reference number are retained
+in page memory, along with the latest aggregate mapping statistics for refresh.
+Mapping/reference overflow safeguards remain unchanged. Real logged-in Chrome
+validation is required before the v1.1.6 candidate becomes a stable release.
+
 ## How it works
 
 1. **Response interception** — a `MAIN`-world script reads ChatGPT conversation-detail JSON. It makes one debounced, same-origin detail request on initial/SPA conversation routes and after a reply stream finishes.
@@ -104,7 +126,7 @@ for s in 16 48 128; do rsvg-convert -w $s -h $s icons/icon.svg -o icons/icon$s.p
 - Tool/search usage reflects only countable tool content persisted in the active conversation mapping. Some ChatGPT tool executions may retain structural tool nodes without persisted text and can therefore contribute zero estimated tokens; this is not an extension bug.
 - DOM fallback is partial and may exclude history unloaded by ChatGPT. Unknown models and limits remain visibly unknown.
 - The extension depends on ChatGPT's internal response shape, which OpenAI can change without notice. If the badge stops updating, that is the likely cause.
-- Context limits are inferred from the model slug unless an explicitly matched ChatGPT runtime context-window value or a documented ChatGPT reference is available; they may lag behind new model releases.
+- Context references follow their labelled provenance: personal override, trusted runtime metadata, documented ChatGPT reference, exact model catalog reference, then inference; they may lag behind new model releases.
 
 ## References
 

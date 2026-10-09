@@ -38,6 +38,8 @@
   let inFlightConversationId = null;
   let sessionAuth = null;
   let sessionAuthPromise = null;
+  let catalogMaxTokens = null;
+  let lastTokenUpdate = null;
 
   function estimateTokens(text) {
     if (!text || typeof text !== 'string') return 0;
@@ -65,6 +67,9 @@
     }
     if (Object.prototype.hasOwnProperty.call(DOCUMENTED_CHATGPT_REFERENCES, slug)) {
       return { limit: DOCUMENTED_CHATGPT_REFERENCES[slug], source: 'documented ChatGPT reference', confidence: 'documented' };
+    }
+    if (slug === 'gpt-6-thinking' && catalogMaxTokens != null) {
+      return { limit: catalogMaxTokens, source: 'ChatGPT model catalog · max_tokens', confidence: 'catalog-reference' };
     }
     if (Object.prototype.hasOwnProperty.call(MODEL_CONTEXT_LIMITS, slug)) {
       return { limit: MODEL_CONTEXT_LIMITS[slug], source: 'known ChatGPT inferred', confidence: 'inferred' };
@@ -94,7 +99,7 @@
     };
   }
 
-  function dispatchTokenUpdate(textByRole, modelSlug) {
+  function dispatchTokenUpdate(textByRole, modelSlug, conversationId = extractConversationId()) {
     let totalTokens = 0;
     const breakdown = {};
 
@@ -111,24 +116,62 @@
 
     console.log(`[ChatGPT Token Tracker] Estimated tokens: ${metrics.totalTokens}; model: ${modelSlug || 'unknown'}; limit source: ${resolvedLimit.source}`);
 
-    window.postMessage(
-      {
-        type: 'CHATGPT_TOKEN_USAGE_UPDATE',
-        data: {
-          ...metrics,
-          modelSlug,
-          modelDisplayName: null,
-          modelSource: modelSlug ? 'backend' : 'unknown',
-          limitSource: resolvedLimit.source,
-          limitConfidence: resolvedLimit.confidence,
-          dataSource: 'backend',
-          breakdown,
-          charCount: Object.values(textByRole).reduce((a, b) => a + b.length, 0),
-          updatedAt: new Date().toISOString()
-        }
-      },
-      '*'
-    );
+    const data = {
+      ...metrics,
+      modelSlug,
+      modelDisplayName: null,
+      modelSource: modelSlug ? 'backend' : 'unknown',
+      limitSource: resolvedLimit.source,
+      limitConfidence: resolvedLimit.confidence,
+      dataSource: 'backend',
+      breakdown,
+      charCount: Object.values(textByRole).reduce((a, b) => a + b.length, 0),
+      updatedAt: new Date().toISOString()
+    };
+    lastTokenUpdate = { data, conversationId, pathname: window.location?.pathname };
+    window.postMessage({ type: 'CHATGPT_TOKEN_USAGE_UPDATE', data }, '*');
+  }
+
+  function processModelCatalog(json) {
+    if (!Array.isArray(json?.models)) return;
+    const matches = json.models.filter(model => model?.slug === 'gpt-6-thinking');
+    if (!matches.length && json.models.some(model => typeof model?.slug === 'string' && model.slug.endsWith('-wm'))) return;
+    const value = matches.length === 1 ? matches[0].max_tokens : null;
+    const limit = Number.isSafeInteger(value) && value > 0 ? value : null;
+    if (limit === catalogMaxTokens) return;
+    catalogMaxTokens = limit;
+    // Reuse counts, never retain message text or refresh a conversation for catalog updates.
+    if (!lastTokenUpdate || lastTokenUpdate.data.modelSlug !== 'gpt-6-thinking' ||
+        lastTokenUpdate.conversationId !== extractConversationId() ||
+        lastTokenUpdate.pathname !== window.location?.pathname) return;
+    const resolved = resolveContextLimit(lastTokenUpdate.data.modelSlug);
+    const data = {
+      ...lastTokenUpdate.data,
+      ...contextMetrics(lastTokenUpdate.data.totalTokens, resolved.limit),
+      limitSource: resolved.source,
+      limitConfidence: resolved.confidence
+    };
+    lastTokenUpdate.data = data;
+    window.postMessage({ type: 'CHATGPT_TOKEN_USAGE_UPDATE', data }, '*');
+  }
+
+  async function processModelCatalogResponse(response) {
+    if (!response.ok || !(response.headers?.get('content-type') || '').includes('json')) return;
+    try {
+      processModelCatalog(await response.json());
+    } catch (error) {
+      // Malformed catalogs leave the existing reference unchanged; never log payloads.
+    }
+  }
+
+  function isModelCatalog(url, method) {
+    try {
+      const target = new URL(url, window.location.origin);
+      return method === 'GET' && target.origin === window.location.origin &&
+        /^\/backend-api\/models\/?$/.test(target.pathname);
+    } catch (error) {
+      return false;
+    }
   }
 
   function extractContentText(content) {
@@ -209,7 +252,7 @@
     if (fingerprints.length) console.info?.('[ChatGPT Token Tracker] Tool schema fingerprints', { count: fingerprints.length, fingerprints });
   }
 
-  function processJsonMapping(jsonObj) {
+  function processJsonMapping(jsonObj, conversationId = extractConversationId()) {
     if (!jsonObj || typeof jsonObj !== 'object') return;
     const mapping = jsonObj.mapping;
     if (!mapping || typeof mapping !== 'object') return;
@@ -251,7 +294,7 @@
       textByRole[targetRole] += extractContentText(msg.content);
     }
 
-    dispatchTokenUpdate(textByRole, modelSlug);
+    dispatchTokenUpdate(textByRole, modelSlug, conversationId);
   }
 
   function isConversationDetail(url) {
@@ -392,7 +435,7 @@
       parseError
     });
 
-    if (kind === 'detail' && hasMapping) processJsonMapping(json);
+    if (kind === 'detail' && hasMapping) processJsonMapping(json, safePathname(requestUrl).split('/')[3] || null);
     return { status: response.status, hasMapping };
   }
 
@@ -461,7 +504,9 @@
       const targetUrl = response.url || (typeof args[0] === 'string' ? args[0] : args[0]?.url || '');
       const method = String(args[1]?.method || args[0]?.method || 'GET').toUpperCase();
       const kind = requestKind(targetUrl, method);
-      if (kind === 'detail' || kind === 'init') {
+      if (isModelCatalog(targetUrl, method)) {
+        processModelCatalogResponse(response.clone());
+      } else if (kind === 'detail' || kind === 'init') {
         processConversationResponse(response.clone(), targetUrl, method, kind, requestAuthInfo(args));
       } else if (kind === 'stream') refreshConversationAfterStream(response);
     } catch (err) {

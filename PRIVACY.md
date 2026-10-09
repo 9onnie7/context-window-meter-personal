@@ -1,6 +1,6 @@
 # Privacy Policy — Context Window Meter for ChatGPT
 
-_Last updated: 31 August 2026_
+_Last updated: 9 October 2026_
 
 _This personal fork has no external backend service or separately hosted data-collection service._
 
@@ -18,6 +18,12 @@ same-origin request to ChatGPT for that conversation's detail. Session credentia
 remain in page memory only and are never sent to another service.
 
 All of this happens in your browser tab, in memory, while the tab is open.
+
+The extension may also read ChatGPT's existing same-origin model catalog GET
+responses for reference metadata. It retains only the supported model slug and
+validated `max_tokens` reference value, plus the latest aggregate token statistics
+for display updates, in page memory. It does not initiate model catalog requests,
+persist or log the raw catalog, or send this metadata to another service.
 
 ## Data collection
 
